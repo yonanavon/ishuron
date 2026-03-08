@@ -2,6 +2,10 @@ import { useState, useEffect, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import { Plus, Pencil, Trash2, Upload, Search, X } from 'lucide-react';
 
+const CLASS_OPTIONS = [
+  'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'יא', 'יב',
+];
+
 interface Student {
   id: number;
   firstName: string;
@@ -166,8 +170,13 @@ export default function StudentsPage() {
                 </div>
                 <div>
                   <label className="block text-sm mb-1">כיתה *</label>
-                  <input value={form.className} onChange={e => setForm({ ...form, className: e.target.value })}
-                    className="w-full px-3 py-2 border border-input rounded-md text-sm" required />
+                  <select value={form.className} onChange={e => setForm({ ...form, className: e.target.value })}
+                    className="w-full px-3 py-2 border border-input rounded-md text-sm" required>
+                    <option value="">בחר כיתה</option>
+                    {CLASS_OPTIONS.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">

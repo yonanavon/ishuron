@@ -2,6 +2,10 @@ import { useState, useEffect, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import { Plus, Pencil, Trash2, X } from 'lucide-react';
 
+const CLASS_OPTIONS = [
+  'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'יא', 'יב',
+];
+
 interface Teacher {
   id: number;
   name: string;
@@ -114,8 +118,13 @@ export default function TeachersPage() {
               </div>
               <div>
                 <label className="block text-sm mb-1">כיתה (למחנך)</label>
-                <input value={form.className} onChange={e => setForm({ ...form, className: e.target.value })}
-                  className="w-full px-3 py-2 border border-input rounded-md text-sm" />
+                <select value={form.className} onChange={e => setForm({ ...form, className: e.target.value })}
+                  className="w-full px-3 py-2 border border-input rounded-md text-sm">
+                  <option value="">ללא</option>
+                  {CLASS_OPTIONS.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
               </div>
               <button type="submit" className="w-full bg-primary text-primary-foreground py-2 rounded-md hover:bg-primary/90 text-sm font-medium">
                 {editing ? 'עדכן' : 'הוסף'}
