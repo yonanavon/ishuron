@@ -13,6 +13,7 @@ class WhatsAppService {
   private currentQR: string | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private lastReceived: { phone: string; text: string; timestamp: string } | null = null;
 
   async connect(): Promise<void> {
     try {
@@ -49,19 +50,27 @@ class WhatsAppService {
 
         if (connection === 'close') {
           this.currentQR = null;
-          const reason = lastDisconnect?.error?.output?.statusCode;
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const errorMsg = lastDisconnect?.error?.message || 'unknown';
+          console.log(`WhatsApp connection closed — statusCode=${statusCode}, error="${errorMsg}"`);
 
-          if (reason === DisconnectReason.loggedOut) {
+          if (statusCode === DisconnectReason.loggedOut) {
+            console.log('WhatsApp logged out, clearing session...');
+            const { prisma } = await import('../lib/prisma.js');
+            await prisma.whatsappSession.deleteMany();
             this.status = 'disconnected';
             this.emitStatus();
-            console.log('WhatsApp logged out, clearing session...');
           } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            console.log(`WhatsApp reconnecting... attempt ${this.reconnectAttempts}`);
-            setTimeout(() => this.connect(), 3000 * this.reconnectAttempts);
+            const delay = 3000 * this.reconnectAttempts;
+            console.log(`WhatsApp reconnecting... attempt ${this.reconnectAttempts} in ${delay}ms`);
+            this.status = 'connecting';
+            this.emitStatus();
+            setTimeout(() => this.connect(), delay);
           } else {
             this.status = 'disconnected';
             this.emitStatus();
+            this.emitError(`החיבור נכשל לאחר ${this.maxReconnectAttempts} ניסיונות (שגיאה: ${errorMsg}). נסה "נתק וחבר מחדש".`);
             console.log('WhatsApp max reconnect attempts reached');
           }
         }
@@ -95,6 +104,7 @@ class WhatsAppService {
 
           if (!text || !phone) continue;
 
+          this.lastReceived = { phone, text, timestamp: new Date().toISOString() };
           await logMessage('IN', phone, text);
 
           try {
@@ -141,10 +151,31 @@ class WhatsAppService {
     }
     this.reconnectAttempts = 0;
     this.status = 'disconnected';
+    this.currentQR = null;
     this.emitStatus();
     // Don't await connect() — it sets up event listeners and returns,
     // but Baileys continues in the background. Errors are logged.
     this.connect().catch(err => console.error('WhatsApp restart connect error:', err));
+  }
+
+  async logout(): Promise<void> {
+    if (this.socket) {
+      try {
+        await this.socket.logout();
+      } catch (e) {
+        // ignore — socket may already be closed
+      }
+      this.socket.end(undefined);
+      this.socket = null;
+    }
+    // Clear all auth data from DB
+    const { prisma } = await import('../lib/prisma.js');
+    await prisma.whatsappSession.deleteMany();
+    console.log('WhatsApp session cleared from DB');
+    this.reconnectAttempts = 0;
+    this.status = 'disconnected';
+    this.currentQR = null;
+    this.emitStatus();
   }
 
   getStatus(): ConnectionStatus {
@@ -153,6 +184,10 @@ class WhatsAppService {
 
   getQR(): string | null {
     return this.currentQR;
+  }
+
+  getLastReceivedMessage(): { phone: string; text: string; timestamp: string } | null {
+    return this.lastReceived;
   }
 
   private emitStatus(): void {
