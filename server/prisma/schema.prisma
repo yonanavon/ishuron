@@ -1,0 +1,149 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TeacherRole {
+  CLASS_TEACHER
+  SECRETARY
+  PROFESSIONAL
+  GUARD
+  PRINCIPAL
+}
+
+enum ExitStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+enum MessageDirection {
+  IN
+  OUT
+}
+
+enum AdminRole {
+  ADMIN
+  GUARD
+}
+
+enum ConversationState {
+  IDLE
+  AWAITING_STUDENT_SELECTION
+  AWAITING_DATETIME
+  AWAITING_TEACHER_RESPONSE
+  COMPLETED
+}
+
+model Student {
+  id           Int      @id @default(autoincrement())
+  firstName    String
+  lastName     String
+  idNumber     String   @unique
+  parent1Name  String
+  parent1Phone String
+  parent2Name  String?
+  parent2Phone String?
+  className    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  exitRequests ExitRequest[]
+
+  @@map("students")
+}
+
+model Teacher {
+  id        Int         @id @default(autoincrement())
+  name      String
+  phone     String      @unique
+  role      TeacherRole
+  className String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  exitRequests  ExitRequest[] @relation("teacher")
+  escalatedExits ExitRequest[] @relation("escalatedTo")
+
+  @@map("teachers")
+}
+
+model ExitRequest {
+  id            Int        @id @default(autoincrement())
+  studentId     Int
+  student       Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  requestedBy   String
+  exitDate      DateTime
+  exitTime      String
+  status        ExitStatus @default(PENDING)
+  teacherId     Int?
+  teacher       Teacher?   @relation("teacher", fields: [teacherId], references: [id])
+  escalatedToId Int?
+  escalatedTo   Teacher?   @relation("escalatedTo", fields: [escalatedToId], references: [id])
+  reason        String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@map("exit_requests")
+}
+
+model Conversation {
+  id          Int               @id @default(autoincrement())
+  phone       String            @unique
+  state       ConversationState @default(IDLE)
+  contextData Json?
+  expiresAt   DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@map("conversations")
+}
+
+model MessageTemplate {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  name      String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("message_templates")
+}
+
+model MessageLog {
+  id          Int              @id @default(autoincrement())
+  direction   MessageDirection
+  phone       String
+  content     String
+  messageType String           @default("text")
+  relatedTo   String?
+  status      String?
+  createdAt   DateTime         @default(now())
+
+  @@map("message_logs")
+}
+
+model AdminUser {
+  id           Int       @id @default(autoincrement())
+  username     String    @unique
+  passwordHash String
+  role         AdminRole
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("admin_users")
+}
+
+model WhatsappSession {
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("whatsapp_sessions")
+}
