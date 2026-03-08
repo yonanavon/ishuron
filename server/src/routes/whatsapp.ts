@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware, adminOnly } from '../middleware/auth';
 import { getWhatsAppService } from '../services/whatsapp.service';
-import { phoneToJid } from '../utils/phone';
+import { normalizePhone } from '../utils/phone';
 import { logMessage } from '../services/notification.service';
 
 const router = Router();
@@ -53,9 +53,10 @@ router.post('/send-test', async (req: Request, res: Response) => {
       return;
     }
     const wa = getWhatsAppService();
-    const jid = phoneToJid(phone);
+    const normalized = normalizePhone(phone);
+    const jid = wa.resolveJidForSend(normalized);
     await wa.sendMessage(jid, message);
-    await logMessage('OUT', phone, message, 'test');
+    await logMessage('OUT', normalized, message, 'test');
     res.json({ success: true });
   } catch (error: any) {
     console.error('WhatsApp send test error:', error);

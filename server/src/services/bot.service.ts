@@ -19,9 +19,9 @@ interface ConversationContext {
 }
 
 async function sendMessage(phone: string, text: string): Promise<void> {
-  const jid = phoneToJid(phone);
-  console.log(`[Bot] sendMessage phone="${phone}" jid="${jid}" text="${text.substring(0, 50)}..."`);
   const wa = getWhatsAppService();
+  const jid = wa.resolveJidForSend(phone);
+  console.log(`[Bot] sendMessage phone="${phone}" jid="${jid}" text="${text.substring(0, 50)}..."`);
   try {
     await wa.sendMessage(jid, text);
     console.log(`[Bot] sendMessage SUCCESS to ${jid}`);
@@ -32,7 +32,7 @@ async function sendMessage(phone: string, text: string): Promise<void> {
   await logMessage('OUT', phone, text);
 }
 
-export async function handleIncomingMessage(phone: string, text: string): Promise<void> {
+export async function handleIncomingMessage(phone: string, text: string, _senderJid?: string): Promise<void> {
   const normalizedPhone = normalizePhone(phone);
   console.log(`[Bot] handleIncomingMessage phone="${phone}" normalized="${normalizedPhone}"`);
 

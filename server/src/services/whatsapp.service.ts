@@ -14,6 +14,9 @@ class WhatsAppService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private lastReceived: { phone: string; text: string; timestamp: string } | null = null;
+  // LID <-> phone mapping cache
+  private lidToPhone = new Map<string, string>();
+  private phoneToLid = new Map<string, string>();
 
   async connect(): Promise<void> {
     try {
@@ -81,11 +84,24 @@ class WhatsAppService {
           this.reconnectAttempts = 0;
           this.emitStatus();
           console.log('WhatsApp connected successfully');
+          // Pre-build LID mapping for known phones
+          this.prefetchLidMappings().catch(err =>
+            console.error('[WA] Error prefetching LID mappings:', err)
+          );
         }
       });
 
       // Save credentials on update
       this.socket.ev.on('creds.update', saveCreds);
+
+      // Listen for phone number share events (LID -> phone mapping)
+      this.socket.ev.on('chats.phoneNumberShare', (data: { lid: string; jid: string }) => {
+        const lidId = data.lid.split('@')[0];
+        const phone = data.jid.split('@')[0].split(':')[0];
+        this.lidToPhone.set(lidId, phone);
+        this.phoneToLid.set(phone, lidId);
+        console.log(`[WA] phoneNumberShare: LID ${lidId} -> phone ${phone}`);
+      });
 
       // Handle incoming messages
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
@@ -96,12 +112,33 @@ class WhatsAppService {
           if (!msg.message) continue;
 
           const rawJid = msg.key.remoteJid || '';
-          const phone = jidToPhone(rawJid);
           const text =
             msg.message.conversation ||
             msg.message.extendedTextMessage?.text ||
             msg.message.buttonsResponseMessage?.selectedButtonId ||
             '';
+
+          // Resolve phone number — LID JIDs need lookup
+          let phone = jidToPhone(rawJid);
+          const isLid = rawJid.endsWith('@lid');
+
+          if (isLid) {
+            const cached = this.lidToPhone.get(phone);
+            if (cached) {
+              phone = cached;
+            } else {
+              // Try to resolve via onWhatsApp reverse lookup is not possible,
+              // so we log and skip — admin must use phone-format JIDs
+              console.log(`[WA incoming] LID "${rawJid}" — no phone mapping cached, attempting resolve...`);
+              const resolved = await this.resolveLidToPhone(rawJid);
+              if (resolved) {
+                phone = resolved;
+              } else {
+                console.log(`[WA incoming] Could not resolve LID "${rawJid}" to phone. Skipping.`);
+                continue;
+              }
+            }
+          }
 
           console.log(`[WA incoming] rawJid="${rawJid}" phone="${phone}" text="${text}"`);
 
@@ -111,7 +148,7 @@ class WhatsAppService {
           await logMessage('IN', phone, text);
 
           try {
-            await handleIncomingMessage(phone, text);
+            await handleIncomingMessage(phone, text, rawJid);
           } catch (error) {
             console.error('Error handling message:', error);
           }
@@ -123,6 +160,110 @@ class WhatsAppService {
       this.emitStatus();
       this.emitError(error instanceof Error ? error.message : 'שגיאה בחיבור לוואטסאפ');
     }
+  }
+
+  /**
+   * Pre-fetch LID mappings for all known phone numbers on connect.
+   */
+  private async prefetchLidMappings(): Promise<void> {
+    const { prisma } = await import('../lib/prisma.js');
+    const students = await prisma.student.findMany({
+      select: { parent1Phone: true, parent2Phone: true },
+    });
+    const phones = new Set<string>();
+    for (const s of students) {
+      if (s.parent1Phone) phones.add(s.parent1Phone);
+      if (s.parent2Phone) phones.add(s.parent2Phone);
+    }
+    const teachers = await prisma.teacher.findMany({ select: { phone: true } });
+    for (const t of teachers) {
+      if (t.phone) phones.add(t.phone);
+    }
+
+    if (phones.size === 0 || !this.socket) return;
+
+    const phoneArray = [...phones];
+    console.log(`[WA] Prefetching LID mappings for ${phoneArray.length} phones...`);
+    try {
+      const results = await this.socket.onWhatsApp(...phoneArray);
+      if (results) {
+        for (const r of results) {
+          if (r.lid) {
+            const lidId = typeof r.lid === 'string'
+              ? r.lid.split('@')[0]
+              : String(r.lid);
+            const rPhone = r.jid.split('@')[0].split(':')[0];
+            this.lidToPhone.set(lidId, rPhone);
+            this.phoneToLid.set(rPhone, lidId);
+          }
+        }
+        console.log(`[WA] Prefetched ${this.lidToPhone.size} LID mappings`);
+      }
+    } catch (err) {
+      console.error('[WA] prefetchLidMappings error:', err);
+    }
+  }
+
+  /**
+   * Resolve a LID to a phone number by querying contacts in the DB
+   * and using onWhatsApp to find which one maps to this LID.
+   */
+  private async resolveLidToPhone(lidJid: string): Promise<string | null> {
+    try {
+      const { prisma } = await import('../lib/prisma.js');
+      // Get all unique parent phones from students
+      const students = await prisma.student.findMany({
+        select: { parent1Phone: true, parent2Phone: true },
+      });
+      const phones = new Set<string>();
+      for (const s of students) {
+        if (s.parent1Phone) phones.add(s.parent1Phone);
+        if (s.parent2Phone) phones.add(s.parent2Phone);
+      }
+      // Also add teacher phones
+      const teachers = await prisma.teacher.findMany({ select: { phone: true } });
+      for (const t of teachers) {
+        if (t.phone) phones.add(t.phone);
+      }
+
+      // Query WhatsApp for all known phones to build LID mapping
+      if (this.socket && phones.size > 0) {
+        const phoneArray = [...phones];
+        console.log(`[WA] Resolving LID: querying ${phoneArray.length} known phones...`);
+        const results = await this.socket.onWhatsApp(...phoneArray);
+        if (results) {
+          const lidId = lidJid.split('@')[0];
+          for (const r of results) {
+            if (r.lid) {
+              const rLidId = typeof r.lid === 'string' ? r.lid.split('@')[0] : r.lid.toString?.();
+              const rPhone = r.jid.split('@')[0].split(':')[0];
+              // Cache the mapping
+              this.lidToPhone.set(rLidId, rPhone);
+              this.phoneToLid.set(rPhone, rLidId);
+              console.log(`[WA] Mapped LID ${rLidId} -> phone ${rPhone}`);
+              if (rLidId === lidId) {
+                return rPhone;
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[WA] Error resolving LID to phone:', err);
+    }
+    return null;
+  }
+
+  /**
+   * Resolve a phone number (972...) to the correct JID for sending.
+   * Returns LID JID if known, otherwise falls back to standard JID.
+   */
+  resolveJidForSend(phone: string): string {
+    const lidId = this.phoneToLid.get(phone);
+    if (lidId) {
+      return `${lidId}@lid`;
+    }
+    return `${phone}@s.whatsapp.net`;
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {

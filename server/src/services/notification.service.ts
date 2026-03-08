@@ -1,7 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { getWhatsAppService } from './whatsapp.service';
 import { renderTemplate } from './template.service';
-import { phoneToJid } from '../utils/phone';
 import { getIO } from '../socket';
 
 export async function notifyTeacher(
@@ -11,14 +10,15 @@ export async function notifyTeacher(
   const message = await renderTemplate('teacher_approval_request', vars);
   const wa = getWhatsAppService();
 
+  const jid = wa.resolveJidForSend(teacherPhone);
   // Try sending interactive buttons first, fallback to text
   try {
-    await wa.sendInteractiveButtons(phoneToJid(teacherPhone), message, [
+    await wa.sendInteractiveButtons(jid, message, [
       { buttonId: 'approve', buttonText: { displayText: '✅ אישור' } },
       { buttonId: 'reject', buttonText: { displayText: '❌ דחייה' } },
     ]);
   } catch {
-    await wa.sendMessage(phoneToJid(teacherPhone), message);
+    await wa.sendMessage(jid, message);
   }
 
   await logMessage('OUT', teacherPhone, message, 'teacher_approval');
@@ -31,7 +31,7 @@ export async function notifyParent(
 ): Promise<void> {
   const message = await renderTemplate(templateKey, vars);
   const wa = getWhatsAppService();
-  await wa.sendMessage(phoneToJid(parentPhone), message);
+  await wa.sendMessage(wa.resolveJidForSend(parentPhone), message);
   await logMessage('OUT', parentPhone, message, templateKey);
 }
 
@@ -44,7 +44,7 @@ export async function notifyGuard(vars: Record<string, string>): Promise<void> {
 
   for (const guard of guards) {
     try {
-      await wa.sendMessage(phoneToJid(guard.phone), message);
+      await wa.sendMessage(wa.resolveJidForSend(guard.phone), message);
       await logMessage('OUT', guard.phone, message, 'guard_notification');
     } catch (error) {
       console.error(`Failed to notify guard ${guard.phone}:`, error);
