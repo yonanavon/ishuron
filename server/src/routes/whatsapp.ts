@@ -25,8 +25,9 @@ router.post('/restart', async (_req: Request, res: Response) => {
   try {
     const wa = getWhatsAppService();
     await wa.restart();
-    res.json({ success: true });
+    res.json({ success: true, status: wa.getStatus() });
   } catch (error) {
+    console.error('WhatsApp restart error:', error);
     res.status(500).json({ error: 'שגיאה בהפעלה מחדש' });
   }
 });

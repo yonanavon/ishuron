@@ -108,6 +108,7 @@ class WhatsAppService {
       console.error('WhatsApp connection error:', error);
       this.status = 'disconnected';
       this.emitStatus();
+      this.emitError(error instanceof Error ? error.message : 'שגיאה בחיבור לוואטסאפ');
     }
   }
 
@@ -140,7 +141,10 @@ class WhatsAppService {
     }
     this.reconnectAttempts = 0;
     this.status = 'disconnected';
-    await this.connect();
+    this.emitStatus();
+    // Don't await connect() — it sets up event listeners and returns,
+    // but Baileys continues in the background. Errors are logged.
+    this.connect().catch(err => console.error('WhatsApp restart connect error:', err));
   }
 
   getStatus(): ConnectionStatus {
@@ -162,6 +166,13 @@ class WhatsAppService {
     const io = getIO();
     if (io && this.currentQR) {
       io.emit('whatsapp:qr', { qr: this.currentQR });
+    }
+  }
+
+  private emitError(message: string): void {
+    const io = getIO();
+    if (io) {
+      io.emit('whatsapp:error', { error: message });
     }
   }
 }

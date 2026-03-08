@@ -7,15 +7,24 @@ export default function WhatsAppPage() {
   const [status, setStatus] = useState<string>('disconnected');
   const [qr, setQr] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadStatus();
     const socket = getSocket();
-    socket.on('whatsapp:status', (data: { status: string }) => setStatus(data.status));
+    socket.on('whatsapp:status', (data: { status: string }) => {
+      setStatus(data.status);
+      setError(null);
+      if (data.status === 'connected' || data.status === 'disconnected') {
+        setQr(null);
+      }
+    });
     socket.on('whatsapp:qr', (data: { qr: string }) => setQr(data.qr));
+    socket.on('whatsapp:error', (data: { error: string }) => setError(data.error));
     return () => {
       socket.off('whatsapp:status');
       socket.off('whatsapp:qr');
+      socket.off('whatsapp:error');
     };
   }, []);
 
@@ -32,10 +41,13 @@ export default function WhatsAppPage() {
 
   const handleRestart = async () => {
     setRestarting(true);
+    setStatus('connecting');
+    setQr(null);
     try {
       await api.post('/whatsapp/restart');
     } catch (err: any) {
       alert(err.message);
+      setStatus('disconnected');
     } finally {
       setRestarting(false);
     }
@@ -86,6 +98,19 @@ export default function WhatsAppPage() {
         {status === 'connected' && (
           <div className="text-center text-green-600">
             <p>הבוט מחובר ופעיל</p>
+          </div>
+        )}
+
+        {status === 'connecting' && !qr && (
+          <div className="text-center text-yellow-600">
+            <RefreshCw size={24} className="animate-spin mx-auto mb-2" />
+            <p>מתחבר לוואטסאפ...</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm">
+            {error}
           </div>
         )}
       </div>
