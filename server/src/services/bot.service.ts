@@ -9,11 +9,13 @@ import { ConversationState } from '@prisma/client';
 
 interface ConversationContext {
   studentIds?: number[];
+  selectedStudentIds?: number[];
   studentId?: number;
   studentName?: string;
   exitDate?: string;
   exitTime?: string;
   exitRequestId?: number;
+  exitRequestIds?: number[];
   parentName?: string;
   className?: string;
 }
@@ -168,29 +170,71 @@ async function handleIdleState(phone: string, text: string): Promise<void> {
 }
 
 async function handleStudentSelection(phone: string, text: string, context: ConversationContext): Promise<void> {
-  const index = parseInt(text.trim()) - 1;
-  if (isNaN(index) || !context.studentIds || index < 0 || index >= context.studentIds.length) {
+  if (!context.studentIds) {
     await sendMessage(phone, 'אנא שלח מספר תקין מהרשימה.');
     return;
   }
 
-  const studentId = context.studentIds[index];
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
-  if (!student) {
+  // Parse multiple selections: "1 2", "1,2", "1+2", "1 ו2", "1 ו-2"
+  const indices = parseMultipleSelections(text, context.studentIds.length);
+
+  if (indices.length === 0) {
+    await sendMessage(phone, 'אנא שלח מספר תקין מהרשימה. לבחירת כמה ילדים שלח למשל: 1,2');
+    return;
+  }
+
+  // Load selected students
+  const selectedStudents = [];
+  for (const idx of indices) {
+    const studentId = context.studentIds[idx];
+    const student = await prisma.student.findUnique({ where: { id: studentId } });
+    if (student) selectedStudents.push(student);
+  }
+
+  if (selectedStudents.length === 0) {
     await sendMessage(phone, 'תלמיד לא נמצא. אנא נסה שנית.');
     await resetConversation(phone);
     return;
   }
 
-  const studentName = `${student.firstName} ${student.lastName}`;
-  const msg = await renderTemplate('datetime_request', { studentName });
-  await updateConversation(phone, 'AWAITING_DATETIME', {
-    ...context,
-    studentId,
-    studentName,
-    className: student.className,
-  });
-  await sendMessage(phone, msg);
+  if (selectedStudents.length === 1) {
+    // Single selection — ask for datetime
+    const student = selectedStudents[0];
+    const studentName = `${student.firstName} ${student.lastName}`;
+    const msg = await renderTemplate('datetime_request', { studentName });
+    await updateConversation(phone, 'AWAITING_DATETIME', {
+      ...context,
+      studentId: student.id,
+      studentName,
+      className: student.className,
+    });
+    await sendMessage(phone, msg);
+  } else {
+    // Multiple selection — ask for datetime for all
+    const names = selectedStudents.map(s => `${s.firstName} ${s.lastName}`).join(' ו');
+    const msg = await renderTemplate('datetime_request', { studentName: names });
+    await updateConversation(phone, 'AWAITING_DATETIME', {
+      ...context,
+      selectedStudentIds: selectedStudents.map(s => s.id),
+      studentName: names,
+    });
+    await sendMessage(phone, msg);
+  }
+}
+
+function parseMultipleSelections(text: string, maxCount: number): number[] {
+  const cleaned = text.trim();
+  // Split by comma, space, plus, "ו", "ו-"
+  const parts = cleaned.split(/[\s,+]+|ו-?/).filter(Boolean);
+  const indices: number[] = [];
+  for (const part of parts) {
+    const num = parseInt(part);
+    if (!isNaN(num) && num >= 1 && num <= maxCount) {
+      const idx = num - 1;
+      if (!indices.includes(idx)) indices.push(idx);
+    }
+  }
+  return indices;
 }
 
 async function handleDateTimeInput(phone: string, text: string, context: ConversationContext): Promise<void> {
@@ -203,6 +247,36 @@ async function handleDateTimeInput(phone: string, text: string, context: Convers
     return;
   }
 
+  // Multiple students selected
+  if (context.selectedStudentIds && context.selectedStudentIds.length > 1) {
+    const exitRequestIds: number[] = [];
+    const names: string[] = [];
+    for (const studentId of context.selectedStudentIds) {
+      const student = await prisma.student.findUnique({ where: { id: studentId } });
+      if (!student) continue;
+      const studentName = `${student.firstName} ${student.lastName}`;
+      names.push(studentName);
+      const requestId = await createExitRequestSilent(
+        phone, studentId, studentName, exitDate, exitTime,
+        context.parentName || '', student.className
+      );
+      if (requestId) exitRequestIds.push(requestId);
+    }
+
+    await updateConversation(phone, 'AWAITING_TEACHER_RESPONSE', {
+      ...context,
+      exitRequestIds,
+      studentName: names.join(' ו'),
+      exitDate: exitDate.toISOString(),
+      exitTime,
+    });
+
+    const allNames = names.join(' ו');
+    await sendMessage(phone, `בקשות היציאה עבור ${allNames} נשלחו למורים. אנא המתן לאישור.`);
+    return;
+  }
+
+  // Single student
   await createExitRequest(
     phone,
     context.studentId!,
@@ -217,15 +291,6 @@ async function handleDateTimeInput(phone: string, text: string, context: Convers
 async function handleParentFollowUp(phone: string, text: string, context: ConversationContext): Promise<void> {
   const choice = parseEscalationChoice(text);
 
-  if (choice === 'wait' || choice === null) {
-    const msg = await renderTemplate('teacher_pending', {
-      studentName: context.studentName || '',
-      teacherName: '', // Will be filled from exit request
-    });
-    await sendMessage(phone, msg);
-    return;
-  }
-
   if (choice === 'secretary' || choice === 'principal') {
     const targetRole = choice === 'secretary' ? 'SECRETARY' : 'PRINCIPAL';
     const escalateTo = await prisma.teacher.findFirst({ where: { role: targetRole } });
@@ -235,18 +300,19 @@ async function handleParentFollowUp(phone: string, text: string, context: Conver
       return;
     }
 
-    // Update exit request
-    if (context.exitRequestId) {
+    // Escalate all active exit requests
+    const requestIds = context.exitRequestIds || (context.exitRequestId ? [context.exitRequestId] : []);
+    for (const reqId of requestIds) {
       await prisma.exitRequest.update({
-        where: { id: context.exitRequestId },
+        where: { id: reqId },
         data: { status: 'ESCALATED', escalatedToId: escalateTo.id },
-      });
+      }).catch(() => {});
     }
 
-    // Notify escalation target
-    const exitRequest = context.exitRequestId
+    // Notify escalation target for the first request (for context)
+    const exitRequest = requestIds.length > 0
       ? await prisma.exitRequest.findUnique({
-          where: { id: context.exitRequestId },
+          where: { id: requestIds[0] },
           include: { student: true },
         })
       : null;
@@ -267,7 +333,46 @@ async function handleParentFollowUp(phone: string, text: string, context: Conver
       escalatedToName: escalateTo.name,
     });
     await sendMessage(phone, msg);
+    return;
   }
+
+  if (choice === 'wait') {
+    const msg = await renderTemplate('teacher_pending', {
+      studentName: context.studentName || '',
+      teacherName: '',
+    });
+    await sendMessage(phone, msg);
+    return;
+  }
+
+  // Not an escalation choice — check if this is a new exit request for another child
+  const students = await prisma.student.findMany({
+    where: {
+      OR: [
+        { parent1Phone: phone },
+        { parent2Phone: phone },
+      ],
+    },
+  });
+
+  if (students.length > 1) {
+    const parsed = parseMessage(text);
+    const matchedStudents = parsed.name ? matchStudentName(parsed.name, students) : [];
+
+    if (matchedStudents.length > 0 && matchedStudents[0].score >= 0.5) {
+      // This looks like a new request for another child — start fresh for this child
+      console.log(`[Bot] Parent follow-up recognized as new request for "${matchedStudents[0].firstName}"`);
+      await handleIdleState(phone, text);
+      return;
+    }
+  }
+
+  // Default — treat as "wait"
+  const msg = await renderTemplate('teacher_pending', {
+    studentName: context.studentName || '',
+    teacherName: '',
+  });
+  await sendMessage(phone, msg);
 }
 
 async function handleTeacherMessage(
@@ -319,9 +424,6 @@ async function handleTeacherMessage(
     // Notify guard
     await notifyGuard(vars);
 
-    // Update conversation
-    await resetConversation(exitRequest.requestedBy);
-
     await sendMessage(phone, `✅ אישרת את יציאת ${studentName}.`);
   } else {
     await prisma.exitRequest.update({
@@ -330,12 +432,26 @@ async function handleTeacherMessage(
     });
 
     await notifyParent(exitRequest.requestedBy, 'request_rejected', vars);
-    await resetConversation(exitRequest.requestedBy);
 
     await sendMessage(phone, `❌ דחית את יציאת ${studentName}.`);
   }
+
+  // Reset parent conversation only if no more pending requests from this parent
+  const remainingPending = await prisma.exitRequest.count({
+    where: {
+      requestedBy: exitRequest.requestedBy,
+      status: { in: ['PENDING', 'ESCALATED'] },
+    },
+  });
+  if (remainingPending === 0) {
+    await resetConversation(exitRequest.requestedBy);
+  }
 }
 
+/**
+ * Create exit request, notify teacher, update conversation, and message parent.
+ * Used for single-student flow.
+ */
 async function createExitRequest(
   phone: string,
   studentId: number,
@@ -345,7 +461,43 @@ async function createExitRequest(
   parentName: string,
   className: string
 ): Promise<void> {
-  // Find class teacher
+  const requestId = await createExitRequestSilent(
+    phone, studentId, studentName, exitDate, exitTime, parentName, className
+  );
+
+  const classTeacher = await prisma.teacher.findFirst({
+    where: { className, role: 'CLASS_TEACHER' },
+  });
+
+  const msg = await renderTemplate('request_sent_to_teacher', {
+    studentName,
+    teacherName: classTeacher?.name || 'המורה',
+  });
+
+  await updateConversation(phone, 'AWAITING_TEACHER_RESPONSE', {
+    studentId,
+    studentName,
+    exitRequestId: requestId || undefined,
+    parentName,
+    className,
+  });
+
+  await sendMessage(phone, msg);
+}
+
+/**
+ * Create exit request and notify teacher, without messaging the parent
+ * or updating conversation. Returns the request ID.
+ */
+async function createExitRequestSilent(
+  phone: string,
+  studentId: number,
+  studentName: string,
+  exitDate: Date,
+  exitTime: string,
+  parentName: string,
+  className: string
+): Promise<number | null> {
   const classTeacher = await prisma.teacher.findFirst({
     where: { className, role: 'CLASS_TEACHER' },
   });
@@ -373,20 +525,7 @@ async function createExitRequest(
     });
   }
 
-  const msg = await renderTemplate('request_sent_to_teacher', {
-    studentName,
-    teacherName: classTeacher?.name || 'המורה',
-  });
-
-  await updateConversation(phone, 'AWAITING_TEACHER_RESPONSE', {
-    studentId,
-    studentName,
-    exitRequestId: exitRequest.id,
-    parentName,
-    className,
-  });
-
-  await sendMessage(phone, msg);
+  return exitRequest.id;
 }
 
 async function updateConversation(
