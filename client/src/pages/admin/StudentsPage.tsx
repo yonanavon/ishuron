@@ -1,6 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { api } from '@/lib/api';
-import { Plus, Pencil, Trash2, Upload, Search, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, Upload, Search, X, Download } from 'lucide-react';
 
 const CLASS_OPTIONS = [
   'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט', 'י', 'יא', 'יב',
@@ -109,6 +109,10 @@ export default function StudentsPage() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold">ניהול תלמידים</h2>
         <div className="flex gap-2">
+          <a href="/api/students/import-template" className="flex items-center gap-2 px-3 py-2 bg-white border border-border rounded-md hover:bg-muted text-sm">
+            <Download size={16} />
+            טמפלייט
+          </a>
           <label className="flex items-center gap-2 px-3 py-2 bg-white border border-border rounded-md cursor-pointer hover:bg-muted text-sm">
             <Upload size={16} />
             ייבוא

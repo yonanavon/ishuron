@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
+import * as XLSX from 'xlsx';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, adminOnly } from '../middleware/auth';
 import { importStudents } from '../services/import.service';
@@ -130,6 +131,34 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
     res.status(500).json({ error: 'שגיאת שרת' });
   }
+});
+
+// Download import template
+router.get('/import-template', (_req: Request, res: Response) => {
+  const data = [
+    {
+      'שם פרטי': 'ישראל',
+      'שם משפחה': 'ישראלי',
+      'ת.ז': '123456789',
+      'כיתה': 'ב',
+      'שם הורה 1': 'אברהם ישראלי',
+      'טלפון הורה 1': '050-1234567',
+      'שם הורה 2': 'שרה ישראלי',
+      'טלפון הורה 2': '050-7654321',
+    },
+  ];
+  const ws = XLSX.utils.json_to_sheet(data);
+  // Set RTL and column widths
+  ws['!cols'] = [
+    { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 6 },
+    { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'תלמידים');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="students_template.xlsx"');
+  res.send(Buffer.from(buf));
 });
 
 // Import students from Excel/CSV
