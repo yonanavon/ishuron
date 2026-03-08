@@ -95,12 +95,15 @@ class WhatsAppService {
           if (msg.key.fromMe) continue;
           if (!msg.message) continue;
 
-          const phone = jidToPhone(msg.key.remoteJid || '');
+          const rawJid = msg.key.remoteJid || '';
+          const phone = jidToPhone(rawJid);
           const text =
             msg.message.conversation ||
             msg.message.extendedTextMessage?.text ||
             msg.message.buttonsResponseMessage?.selectedButtonId ||
             '';
+
+          console.log(`[WA incoming] rawJid="${rawJid}" phone="${phone}" text="${text}"`);
 
           if (!text || !phone) continue;
 

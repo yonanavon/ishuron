@@ -19,17 +19,27 @@ interface ConversationContext {
 }
 
 async function sendMessage(phone: string, text: string): Promise<void> {
+  const jid = phoneToJid(phone);
+  console.log(`[Bot] sendMessage phone="${phone}" jid="${jid}" text="${text.substring(0, 50)}..."`);
   const wa = getWhatsAppService();
-  await wa.sendMessage(phoneToJid(phone), text);
+  try {
+    await wa.sendMessage(jid, text);
+    console.log(`[Bot] sendMessage SUCCESS to ${jid}`);
+  } catch (err) {
+    console.error(`[Bot] sendMessage FAILED to ${jid}:`, err);
+    throw err;
+  }
   await logMessage('OUT', phone, text);
 }
 
 export async function handleIncomingMessage(phone: string, text: string): Promise<void> {
   const normalizedPhone = normalizePhone(phone);
+  console.log(`[Bot] handleIncomingMessage phone="${phone}" normalized="${normalizedPhone}"`);
 
   // Check if this is a teacher responding
   const teacher = await prisma.teacher.findUnique({ where: { phone: normalizedPhone } });
   if (teacher) {
+    console.log(`[Bot] Recognized as teacher: ${teacher.name}`);
     await handleTeacherMessage(normalizedPhone, text, teacher);
     return;
   }
@@ -82,10 +92,12 @@ async function handleIdleState(phone: string, text: string): Promise<void> {
   });
 
   if (students.length === 0) {
+    console.log(`[Bot] No students found for phone="${phone}". Sending parent_not_found.`);
     const msg = await renderTemplate('parent_not_found');
     await sendMessage(phone, msg);
     return;
   }
+  console.log(`[Bot] Found ${students.length} student(s) for phone="${phone}": ${students.map(s => `${s.firstName} (p1=${s.parent1Phone}, p2=${s.parent2Phone})`).join(', ')}`);
 
   // Find parent name
   const firstStudent = students[0];
