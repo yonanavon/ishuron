@@ -349,6 +349,7 @@ async function createExitRequest(
   const classTeacher = await prisma.teacher.findFirst({
     where: { className, role: 'CLASS_TEACHER' },
   });
+  console.log(`[Bot] createExitRequest className="${className}" classTeacher=${classTeacher ? `${classTeacher.name} (${classTeacher.phone})` : 'NOT FOUND'}`);
 
   const exitRequest = await prisma.exitRequest.create({
     data: {

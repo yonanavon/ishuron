@@ -11,14 +11,23 @@ export async function notifyTeacher(
   const wa = getWhatsAppService();
 
   const jid = wa.resolveJidForSend(teacherPhone);
+  console.log(`[Notify] notifyTeacher phone="${teacherPhone}" jid="${jid}"`);
   // Try sending interactive buttons first, fallback to text
   try {
     await wa.sendInteractiveButtons(jid, message, [
       { buttonId: 'approve', buttonText: { displayText: '✅ אישור' } },
       { buttonId: 'reject', buttonText: { displayText: '❌ דחייה' } },
     ]);
-  } catch {
-    await wa.sendMessage(jid, message);
+    console.log(`[Notify] notifyTeacher SUCCESS (buttons) to ${jid}`);
+  } catch (btnErr) {
+    console.log(`[Notify] buttons failed, falling back to text: ${btnErr}`);
+    try {
+      await wa.sendMessage(jid, message);
+      console.log(`[Notify] notifyTeacher SUCCESS (text) to ${jid}`);
+    } catch (txtErr) {
+      console.error(`[Notify] notifyTeacher FAILED to ${jid}:`, txtErr);
+      throw txtErr;
+    }
   }
 
   await logMessage('OUT', teacherPhone, message, 'teacher_approval');
