@@ -1,20 +1,16 @@
 import { prisma } from '../lib/prisma';
-import {
-  AuthenticationState,
-  SignalDataTypeMap,
-  initAuthCreds,
-  proto,
-  BufferJSON,
-} from 'baileys';
 
 /**
  * Prisma-based auth state for Baileys.
  * Stores authentication credentials and signal keys in PostgreSQL.
  */
 export async function usePrismaAuthState(): Promise<{
-  state: AuthenticationState;
+  state: any;
   saveCreds: () => Promise<void>;
 }> {
+  const baileys = await import('baileys');
+  const { initAuthCreds, proto, BufferJSON } = baileys;
+
   const writeData = async (key: string, data: any) => {
     const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
     await prisma.whatsappSession.upsert({
@@ -41,13 +37,10 @@ export async function usePrismaAuthState(): Promise<{
     await writeData('creds', creds);
   }
 
-  const state: AuthenticationState = {
+  const state = {
     creds,
     keys: {
-      get: async <T extends keyof SignalDataTypeMap>(
-        type: T,
-        ids: string[]
-      ): Promise<{ [id: string]: SignalDataTypeMap[T] }> => {
+      get: async (type: string, ids: string[]): Promise<Record<string, any>> => {
         const result: Record<string, any> = {};
         for (const id of ids) {
           const data = await readData(`${type}-${id}`);

@@ -1,11 +1,3 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  WASocket,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-} from 'baileys';
-import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode';
 import { usePrismaAuthState } from './whatsapp-auth-store';
 import { handleIncomingMessage } from './bot.service';
@@ -16,7 +8,7 @@ import { logMessage } from './notification.service';
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'qr';
 
 class WhatsAppService {
-  private socket: WASocket | null = null;
+  private socket: any = null;
   private status: ConnectionStatus = 'disconnected';
   private currentQR: string | null = null;
   private reconnectAttempts = 0;
@@ -26,6 +18,10 @@ class WhatsAppService {
     try {
       this.status = 'connecting';
       this.emitStatus();
+
+      const baileys = await import('baileys');
+      const makeWASocket = baileys.default;
+      const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = baileys;
 
       const { state, saveCreds } = await usePrismaAuthState();
       const { version } = await fetchLatestBaileysVersion();
@@ -41,7 +37,7 @@ class WhatsAppService {
       });
 
       // Handle connection updates
-      this.socket.ev.on('connection.update', async (update) => {
+      this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -53,12 +49,11 @@ class WhatsAppService {
 
         if (connection === 'close') {
           this.currentQR = null;
-          const reason = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          const reason = lastDisconnect?.error?.output?.statusCode;
 
           if (reason === DisconnectReason.loggedOut) {
             this.status = 'disconnected';
             this.emitStatus();
-            // Clear stored session
             console.log('WhatsApp logged out, clearing session...');
           } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
@@ -84,7 +79,7 @@ class WhatsAppService {
       this.socket.ev.on('creds.update', saveCreds);
 
       // Handle incoming messages
-      this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
+      this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
