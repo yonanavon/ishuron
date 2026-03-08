@@ -116,14 +116,35 @@ async function handleIdleState(phone: string, text: string): Promise<void> {
     : [];
 
   if (students.length === 1) {
-    // Only one child - use directly
-    matchedStudents = [{ ...students[0], score: 1 }];
+    // Only one child — skip name matching, go straight to datetime
+    const student = students[0];
+    const studentName = `${student.firstName} ${student.lastName}`;
+
+    if (parsed.date && parsed.time) {
+      // All info available — create request immediately
+      await createExitRequest(phone, student.id, studentName, parsed.date, parsed.time, parentName, student.className);
+      return;
+    }
+
+    // Greet parent and ask for datetime directly
+    const msg = `שלום ${parentName}, להוציא את ${student.firstName}?\nאנא שלח תאריך ושעה.\nלדוגמה: "היום 12:00" או "מחר 10:30"`;
+    await updateConversation(phone, 'AWAITING_DATETIME', {
+      studentId: student.id,
+      studentName,
+      parentName,
+      className: student.className,
+      exitDate: parsed.date?.toISOString(),
+      exitTime: parsed.time,
+    });
+    await sendMessage(phone, msg);
+    return;
   }
 
-  if (matchedStudents.length === 0 && students.length > 1) {
-    // Multiple children, couldn't determine which one
+  // Multiple children
+  if (matchedStudents.length === 0) {
+    // Couldn't determine which child
     const list = students.map((s, i) => `${i + 1}. ${s.firstName} ${s.lastName} (${s.className})`).join('\n');
-    const msg = await renderTemplate('student_selection', { studentList: list });
+    const msg = `שלום ${parentName}, איזה ילד/ה תרצה להוציא?\n${list}\nשלח מספר מהרשימה (לכמה ילדים: 1,2)`;
     await updateConversation(phone, 'AWAITING_STUDENT_SELECTION', {
       studentIds: students.map(s => s.id),
       parentName,
@@ -137,7 +158,7 @@ async function handleIdleState(phone: string, text: string): Promise<void> {
     const list = matchedStudents.slice(0, 5).map((s, i) =>
       `${i + 1}. ${s.firstName} ${s.lastName} (${students.find(st => st.id === s.id)?.className})`
     ).join('\n');
-    const msg = await renderTemplate('student_selection', { studentList: list });
+    const msg = `שלום ${parentName}, למי התכוונת?\n${list}\nשלח מספר מהרשימה.`;
     await updateConversation(phone, 'AWAITING_STUDENT_SELECTION', {
       studentIds: matchedStudents.slice(0, 5).map(s => s.id),
       parentName,
