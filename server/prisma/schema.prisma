@@ -86,6 +86,8 @@ model ExitRequest {
   escalatedToId Int?
   escalatedTo   Teacher?   @relation("escalatedTo", fields: [escalatedToId], references: [id])
   reason        String?
+  notifiedAt    DateTime?
+  reminderSentAt DateTime?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
@@ -137,6 +139,14 @@ model AdminUser {
   updatedAt    DateTime  @updatedAt
 
   @@map("admin_users")
+}
+
+model Setting {
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
 }
 
 model WhatsappSession {

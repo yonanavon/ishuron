@@ -16,8 +16,10 @@ import templateRoutes from './routes/templates';
 import logRoutes from './routes/logs';
 import exitRoutes from './routes/exits';
 import whatsappRoutes from './routes/whatsapp';
+import settingsRoutes from './routes/settings';
 import { getWhatsAppService } from './services/whatsapp.service';
 import { loadTemplates } from './services/template.service';
+import { startScheduler } from './services/scheduler.service';
 
 const app = express();
 const server = http.createServer(app);
@@ -45,6 +47,7 @@ app.use('/api/templates', templateRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/exits', exitRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -95,6 +98,9 @@ async function start() {
   } catch (error) {
     console.error('WhatsApp startup error:', error);
   }
+
+  // Start reminder/escalation scheduler
+  startScheduler();
 }
 
 start().catch(console.error);

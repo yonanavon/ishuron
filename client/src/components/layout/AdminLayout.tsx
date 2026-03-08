@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { logout } from '@/lib/api';
-import { Users, GraduationCap, FileText, MessageSquare, ScrollText, LayoutDashboard, LogOut, Shield } from 'lucide-react';
+import { Users, GraduationCap, FileText, MessageSquare, ScrollText, LayoutDashboard, LogOut, Shield, Settings } from 'lucide-react';
 
 const navItems = [
   { to: '/admin', icon: LayoutDashboard, label: 'דשבורד', end: true },
@@ -9,6 +9,7 @@ const navItems = [
   { to: '/admin/templates', icon: FileText, label: 'תבניות' },
   { to: '/admin/whatsapp', icon: MessageSquare, label: 'וואטסאפ' },
   { to: '/admin/logs', icon: ScrollText, label: 'לוגים' },
+  { to: '/admin/settings', icon: Settings, label: 'הגדרות' },
 ];
 
 export default function AdminLayout() {

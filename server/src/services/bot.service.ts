@@ -544,6 +544,10 @@ async function createExitRequestSilent(
       exitTime,
       parentName,
     });
+    await prisma.exitRequest.update({
+      where: { id: exitRequest.id },
+      data: { notifiedAt: new Date() },
+    });
   }
 
   return exitRequest.id;

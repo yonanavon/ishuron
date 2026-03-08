@@ -7,6 +7,7 @@ import TeachersPage from './pages/admin/TeachersPage';
 import TemplatesPage from './pages/admin/TemplatesPage';
 import WhatsAppPage from './pages/admin/WhatsAppPage';
 import LogsPage from './pages/admin/LogsPage';
+import SettingsPage from './pages/admin/SettingsPage';
 import GuardDashboardPage from './pages/guard/GuardDashboardPage';
 import AdminLayout from './components/layout/AdminLayout';
 
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="whatsapp" element={<WhatsAppPage />} />
         <Route path="logs" element={<LogsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="/guard" element={
         <ProtectedRoute allowedRoles={['GUARD', 'ADMIN']}>
