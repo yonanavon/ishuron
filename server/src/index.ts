@@ -71,12 +71,22 @@ io.on('connection', (socket) => {
 const PORT = parseInt(process.env.PORT || '3000');
 
 async function start() {
-  // Load message templates into cache
-  await loadTemplates();
+  console.log('Starting server...');
+  console.log('PORT:', PORT);
+  console.log('NODE_ENV:', process.env.NODE_ENV);
+  console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'set' : 'NOT SET');
 
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  // Load message templates into cache (non-blocking)
+  try {
+    await loadTemplates();
+    console.log('Templates loaded');
+  } catch (error) {
+    console.error('Failed to load templates:', error);
+  }
 
   // Connect WhatsApp (non-blocking)
   try {
