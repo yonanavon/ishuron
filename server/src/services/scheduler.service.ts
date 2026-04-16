@@ -1,6 +1,9 @@
 import { prisma } from '../lib/prisma';
 import { notifyTeacher } from './notification.service';
 import { getWhatsAppService } from './whatsapp.service';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ module: 'scheduler' });
 
 async function getSetting(key: string, defaultValue: number): Promise<number> {
   const row = await prisma.setting.findUnique({ where: { key } });
@@ -11,8 +14,9 @@ async function getSetting(key: string, defaultValue: number): Promise<number> {
 
 /**
  * Check for pending exit requests that need a reminder or escalation.
+ * Exported for tests; invoked by the interval timer in production.
  */
-async function checkPendingRequests(): Promise<void> {
+export async function checkPendingRequests(): Promise<void> {
   const wa = getWhatsAppService();
   if (wa.getStatus() !== 'connected') return;
 
@@ -40,9 +44,18 @@ async function checkPendingRequests(): Promise<void> {
 
     // Auto-escalate
     if (elapsed >= escalateMinutes) {
-      console.log(`[Scheduler] Auto-escalating request #${req.id} (${elapsed.toFixed(0)} min elapsed)`);
+      // Atomic claim: only one worker succeeds for this request.
+      const claim = await prisma.exitRequest.updateMany({
+        where: { id: req.id, status: 'PENDING' },
+        data: {
+          status: 'ESCALATED',
+          notifiedAt: new Date(),
+        },
+      });
+      if (claim.count === 0) continue;
 
-      // Find secretary or principal to escalate to
+      log.info({ requestId: req.id, elapsedMin: Math.round(elapsed) }, 'auto-escalating request');
+
       const escalateTo = await prisma.teacher.findFirst({
         where: { role: { in: ['SECRETARY', 'PRINCIPAL'] } },
       });
@@ -50,11 +63,7 @@ async function checkPendingRequests(): Promise<void> {
       if (escalateTo) {
         await prisma.exitRequest.update({
           where: { id: req.id },
-          data: {
-            status: 'ESCALATED',
-            escalatedToId: escalateTo.id,
-            notifiedAt: new Date(),
-          },
+          data: { escalatedToId: escalateTo.id },
         });
 
         const studentName = `${req.student.firstName} ${req.student.lastName}`;
@@ -67,14 +76,21 @@ async function checkPendingRequests(): Promise<void> {
           parentName: '',
         });
 
-        console.log(`[Scheduler] Escalated request #${req.id} to ${escalateTo.name}`);
+        log.info({ requestId: req.id, escalatedTo: escalateTo.name }, 'request escalated');
       }
       continue;
     }
 
     // Send reminder
     if (elapsed >= reminderMinutes && !req.reminderSentAt) {
-      console.log(`[Scheduler] Sending reminder for request #${req.id} (${elapsed.toFixed(0)} min elapsed)`);
+      // Atomic claim: mark reminderSentAt before sending to prevent duplicates.
+      const claim = await prisma.exitRequest.updateMany({
+        where: { id: req.id, status: 'PENDING', reminderSentAt: null },
+        data: { reminderSentAt: new Date() },
+      });
+      if (claim.count === 0) continue;
+
+      log.info({ requestId: req.id, elapsedMin: Math.round(elapsed) }, 'sending reminder');
 
       const studentName = `${req.student.firstName} ${req.student.lastName}`;
       const jid = wa.resolveJidForSend(req.teacher.phone);
@@ -82,13 +98,9 @@ async function checkPendingRequests(): Promise<void> {
         await wa.sendMessage(jid,
           `תזכורת: בקשת יציאה עבור ${studentName} (${req.student.className}) ממתינה לאישורך.\nאנא השב 1 לאישור או 2 לדחייה.`
         );
-        await prisma.exitRequest.update({
-          where: { id: req.id },
-          data: { reminderSentAt: new Date() },
-        });
-        console.log(`[Scheduler] Reminder sent for request #${req.id} to ${req.teacher.name}`);
+        log.info({ requestId: req.id, teacher: req.teacher.name }, 'reminder sent');
       } catch (err) {
-        console.error(`[Scheduler] Failed to send reminder for request #${req.id}:`, err);
+        log.error({ err, requestId: req.id }, 'failed to send reminder');
       }
     }
   }
@@ -100,17 +112,15 @@ export function startScheduler(): void {
   if (intervalId) return;
   // Check every 2 minutes
   intervalId = setInterval(() => {
-    checkPendingRequests().catch(err =>
-      console.error('[Scheduler] Error:', err)
-    );
+    checkPendingRequests().catch(err => log.error({ err }, 'scheduler tick error'));
   }, 2 * 60 * 1000);
-  console.log('[Scheduler] Started — checking every 2 minutes');
+  log.info('scheduler started (every 2 minutes)');
 }
 
 export function stopScheduler(): void {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
-    console.log('[Scheduler] Stopped');
+    log.info('scheduler stopped');
   }
 }

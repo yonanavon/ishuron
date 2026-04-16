@@ -1,11 +1,14 @@
 import { prisma } from '../lib/prisma';
 import { normalizePhone } from '../utils/phone';
-import { parseMessage, matchStudentName, parseTeacherResponse, parseEscalationChoice } from './message-parser.service';
+import { parseMessage, matchStudentName, parseTeacherResponse, parseTeacherPickedResponse, parseEscalationChoice } from './message-parser.service';
 import { renderTemplate } from './template.service';
 import { notifyTeacher, notifyParent, notifyGuard, logMessage } from './notification.service';
 import { getWhatsAppService } from './whatsapp.service';
 import { phoneToJid } from '../utils/phone';
-import { ConversationState } from '@prisma/client';
+import { ConversationState, Prisma } from '@prisma/client';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ module: 'bot' });
 
 interface ConversationContext {
   studentIds?: number[];
@@ -23,12 +26,12 @@ interface ConversationContext {
 async function sendMessage(phone: string, text: string): Promise<void> {
   const wa = getWhatsAppService();
   const jid = wa.resolveJidForSend(phone);
-  console.log(`[Bot] sendMessage phone="${phone}" jid="${jid}" text="${text.substring(0, 50)}..."`);
+  log.debug({ phone, jid, preview: text.substring(0, 50) }, 'sendMessage');
   try {
     await wa.sendMessage(jid, text);
-    console.log(`[Bot] sendMessage SUCCESS to ${jid}`);
+    log.debug({ jid }, 'sendMessage success');
   } catch (err) {
-    console.error(`[Bot] sendMessage FAILED to ${jid}:`, err);
+    log.error({ err, jid }, 'sendMessage failed');
     throw err;
   }
   await logMessage('OUT', phone, text);
@@ -36,12 +39,12 @@ async function sendMessage(phone: string, text: string): Promise<void> {
 
 export async function handleIncomingMessage(phone: string, text: string, _senderJid?: string): Promise<void> {
   const normalizedPhone = normalizePhone(phone);
-  console.log(`[Bot] handleIncomingMessage phone="${phone}" normalized="${normalizedPhone}"`);
+  log.debug({ phone, normalizedPhone }, 'handleIncomingMessage');
 
   // Check if this is a teacher responding
   const teacher = await prisma.teacher.findUnique({ where: { phone: normalizedPhone } });
   if (teacher) {
-    console.log(`[Bot] Recognized as teacher: ${teacher.name}`);
+    log.debug({ teacher: teacher.name }, 'recognized as teacher');
     await handleTeacherMessage(normalizedPhone, text, teacher);
     return;
   }
@@ -94,12 +97,15 @@ async function handleIdleState(phone: string, text: string): Promise<void> {
   });
 
   if (students.length === 0) {
-    console.log(`[Bot] No students found for phone="${phone}". Sending parent_not_found.`);
+    log.info({ phone }, 'no students found for phone, sending parent_not_found');
     const msg = await renderTemplate('parent_not_found');
     await sendMessage(phone, msg);
     return;
   }
-  console.log(`[Bot] Found ${students.length} student(s) for phone="${phone}": ${students.map(s => `${s.firstName} (p1=${s.parent1Phone}, p2=${s.parent2Phone})`).join(', ')}`);
+  log.debug(
+    { phone, count: students.length, names: students.map(s => s.firstName) },
+    'found students for phone',
+  );
 
   // Find parent name
   const firstStudent = students[0];
@@ -382,7 +388,10 @@ async function handleParentFollowUp(phone: string, text: string, context: Conver
 
     if (matchedStudents.length > 0 && matchedStudents[0].score >= 0.5) {
       // This looks like a new request for another child — start fresh for this child
-      console.log(`[Bot] Parent follow-up recognized as new request for "${matchedStudents[0].firstName}"`);
+      log.info(
+        { studentName: matchedStudents[0].firstName },
+        'parent follow-up recognized as new request',
+      );
       await handleIdleState(phone, text);
       return;
     }
@@ -401,14 +410,8 @@ async function handleTeacherMessage(
   text: string,
   teacher: { id: number; name: string }
 ): Promise<void> {
-  const response = parseTeacherResponse(text);
-  if (!response) {
-    await sendMessage(phone, 'אנא השב 1 לאישור או 2 לדחייה.');
-    return;
-  }
-
-  // Find pending request for this teacher
-  const exitRequest = await prisma.exitRequest.findFirst({
+  // Load ALL pending requests directed at this teacher.
+  const pendingRequests = await prisma.exitRequest.findMany({
     where: {
       OR: [
         { teacherId: teacher.id, status: 'PENDING' },
@@ -416,11 +419,33 @@ async function handleTeacherMessage(
       ],
     },
     include: { student: true },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { createdAt: 'asc' },
   });
 
-  if (!exitRequest) {
+  if (pendingRequests.length === 0) {
     await sendMessage(phone, 'לא נמצאה בקשה ממתינה.');
+    return;
+  }
+
+  // Multiple pending — require "<num> <1|2>" to disambiguate.
+  let exitRequest = pendingRequests[0];
+  let response = parseTeacherResponse(text);
+
+  if (pendingRequests.length > 1) {
+    const picked = parseTeacherPickedResponse(text, pendingRequests.length);
+    if (!picked) {
+      const list = pendingRequests.map((r, i) =>
+        `${i + 1}. ${r.student.firstName} ${r.student.lastName} (${r.student.className}) ${r.exitDate.toLocaleDateString('he-IL')} ${r.exitTime}`
+      ).join('\n');
+      await sendMessage(phone,
+        `יש ${pendingRequests.length} בקשות ממתינות:\n${list}\nהשב בפורמט: <מספר בקשה> <1 לאישור / 2 לדחייה>. לדוגמה: "2 1"`
+      );
+      return;
+    }
+    exitRequest = pendingRequests[picked.index];
+    response = picked.action;
+  } else if (!response) {
+    await sendMessage(phone, 'אנא השב 1 לאישור או 2 לדחייה.');
     return;
   }
 
@@ -522,7 +547,10 @@ async function createExitRequestSilent(
   const classTeacher = await prisma.teacher.findFirst({
     where: { className, role: 'CLASS_TEACHER' },
   });
-  console.log(`[Bot] createExitRequest className="${className}" classTeacher=${classTeacher ? `${classTeacher.name} (${classTeacher.phone})` : 'NOT FOUND'}`);
+  log.info(
+    { className, classTeacher: classTeacher?.name, teacherPhone: classTeacher?.phone },
+    'createExitRequest',
+  );
 
   const exitRequest = await prisma.exitRequest.create({
     data: {
@@ -561,17 +589,18 @@ async function updateConversation(
   const expiresAt = new Date();
   expiresAt.setHours(expiresAt.getHours() + 24);
 
+  const data = contextData as unknown as Prisma.InputJsonValue;
   await prisma.conversation.upsert({
     where: { phone },
-    update: { state, contextData: contextData as any, expiresAt },
-    create: { phone, state, contextData: contextData as any, expiresAt },
+    update: { state, contextData: data, expiresAt },
+    create: { phone, state, contextData: data, expiresAt },
   });
 }
 
 async function resetConversation(phone: string): Promise<void> {
   await prisma.conversation.upsert({
     where: { phone },
-    update: { state: 'IDLE', contextData: undefined, expiresAt: null },
+    update: { state: 'IDLE', contextData: Prisma.JsonNull, expiresAt: null },
     create: { phone, state: 'IDLE' },
   });
 }

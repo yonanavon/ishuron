@@ -57,27 +57,48 @@ export function parseMessage(text: string): ParsedMessage {
   return result;
 }
 
-function parseDate(text: string): Date | undefined {
-  const today = new Date();
+const ISRAEL_TZ = 'Asia/Jerusalem';
 
-  // Check relative dates (היום, מחר, מחרתיים)
-  for (const [word, offset] of Object.entries(RELATIVE_DATES)) {
+// "Today" as seen in Israel, regardless of the server's local timezone.
+function todayInIsrael(): { year: number; month: number; day: number; dow: number } {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: ISRAEL_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+  }).formatToParts(now);
+
+  const get = (type: string) => parts.find(p => p.type === type)?.value || '';
+  const year = parseInt(get('year'));
+  const month = parseInt(get('month')) - 1;
+  const day = parseInt(get('day'));
+  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dow = dowMap[get('weekday')] ?? 0;
+  return { year, month, day, dow };
+}
+
+function parseDate(text: string): Date | undefined {
+  const today = todayInIsrael();
+
+  // Check relative dates (היום, מחר, מחרתיים).
+  // Sort by length desc so "מחרתיים" matches before "מחר" (which is a substring).
+  const relativeEntries = Object.entries(RELATIVE_DATES).sort(
+    (a, b) => b[0].length - a[0].length,
+  );
+  for (const [word, offset] of relativeEntries) {
     if (text.includes(word)) {
-      const date = new Date(today);
-      date.setDate(date.getDate() + offset);
-      return date;
+      return new Date(today.year, today.month, today.day + offset);
     }
   }
 
   // Check Hebrew day names (יום ראשון, etc.)
   for (const [dayName, targetDay] of Object.entries(HEBREW_DAYS)) {
     if (text.includes(dayName)) {
-      const date = new Date(today);
-      const currentDay = date.getDay();
-      let daysToAdd = targetDay - currentDay;
+      let daysToAdd = targetDay - today.dow;
       if (daysToAdd <= 0) daysToAdd += 7;
-      date.setDate(date.getDate() + daysToAdd);
-      return date;
+      return new Date(today.year, today.month, today.day + daysToAdd);
     }
   }
 
@@ -90,7 +111,7 @@ function parseDate(text: string): Date | undefined {
       ? parseInt(dateMatch[3]) < 100
         ? 2000 + parseInt(dateMatch[3])
         : parseInt(dateMatch[3])
-      : today.getFullYear();
+      : today.year;
 
     if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
       return new Date(year, month, day);
@@ -175,12 +196,38 @@ export function parseTeacherResponse(text: string): 'approve' | 'reject' | null 
 }
 
 /**
+ * Parse "<request-num> <1|2>" when a teacher has multiple pending requests.
+ * Returns { index, action } or null if ambiguous.
+ */
+export function parseTeacherPickedResponse(
+  text: string,
+  count: number
+): { index: number; action: 'approve' | 'reject' } | null {
+  const parts = text.trim().split(/[\s,.\-]+/).filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const reqNum = parseInt(parts[0]);
+  if (isNaN(reqNum) || reqNum < 1 || reqNum > count) return null;
+
+  const action = parseTeacherResponse(parts.slice(1).join(' '));
+  if (!action) return null;
+
+  return { index: reqNum - 1, action };
+}
+
+/**
  * Parse parent escalation choice
  */
 export function parseEscalationChoice(text: string): 'wait' | 'secretary' | 'principal' | null {
   const cleaned = text.trim();
-  if (cleaned === '1' || cleaned.includes('המתן')) return 'wait';
-  if (cleaned === '2' || cleaned.includes('מזכירות')) return 'secretary';
-  if (cleaned === '3' || cleaned.includes('מנהל')) return 'principal';
+
+  // Check keywords first (more specific than digits).
+  if (cleaned.includes('מזכירות')) return 'secretary';
+  if (cleaned.includes('מנהל')) return 'principal';
+  if (cleaned.includes('המתן') || cleaned.includes('ממתין')) return 'wait';
+
+  if (cleaned === '1') return 'wait';
+  if (cleaned === '2') return 'secretary';
+  if (cleaned === '3') return 'principal';
   return null;
 }
