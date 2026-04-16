@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, adminOnly } from '../middleware/auth';
+import { logger } from '../lib/logger';
 
+const log = logger.child({ module: 'route:settings' });
 const router = Router();
 
 router.use(authMiddleware, adminOnly);
@@ -15,7 +17,7 @@ router.get('/', async (_req: Request, res: Response) => {
     }
     res.json(result);
   } catch (error) {
-    console.error('Get settings error:', error);
+    log.error({ err: error }, 'get settings error');
     res.status(500).json({ error: 'שגיאת שרת' });
   }
 });
@@ -32,7 +34,7 @@ router.put('/', async (req: Request, res: Response) => {
     }
     res.json({ success: true });
   } catch (error) {
-    console.error('Update settings error:', error);
+    log.error({ err: error }, 'update settings error');
     res.status(500).json({ error: 'שגיאת שרת' });
   }
 });

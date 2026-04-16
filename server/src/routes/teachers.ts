@@ -4,7 +4,9 @@ import * as XLSX from 'xlsx';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, adminOnly } from '../middleware/auth';
 import { normalizePhone } from '../utils/phone';
+import { logger } from '../lib/logger';
 
+const log = logger.child({ module: 'route:teachers' });
 const upload = multer({ storage: multer.memoryStorage() });
 
 const ROLE_MAP: Record<string, string> = {
@@ -165,7 +167,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
 
     res.json(result);
   } catch (error) {
-    console.error('Teacher import error:', error);
+    log.error({ err: error }, 'teacher import error');
     res.status(500).json({ error: 'שגיאה בייבוא הקובץ' });
   }
 });

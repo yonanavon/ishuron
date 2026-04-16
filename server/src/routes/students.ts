@@ -5,7 +5,9 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, adminOnly } from '../middleware/auth';
 import { importStudents } from '../services/import.service';
 import { normalizePhone } from '../utils/phone';
+import { logger } from '../lib/logger';
 
+const log = logger.child({ module: 'route:students' });
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -34,7 +36,7 @@ router.get('/', async (req: Request, res: Response) => {
     });
     res.json(students);
   } catch (error) {
-    console.error('Get students error:', error);
+    log.error({ err: error }, 'get students error');
     res.status(500).json({ error: 'שגיאת שרת' });
   }
 });
@@ -82,7 +84,7 @@ router.post('/', async (req: Request, res: Response) => {
       res.status(409).json({ error: 'תעודת זהות כבר קיימת במערכת' });
       return;
     }
-    console.error('Create student error:', error);
+    log.error({ err: error }, 'create student error');
     res.status(500).json({ error: 'שגיאת שרת' });
   }
 });
@@ -171,7 +173,7 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
     const result = await importStudents(req.file.buffer, req.file.originalname);
     res.json(result);
   } catch (error) {
-    console.error('Import error:', error);
+    log.error({ err: error }, 'students import error');
     res.status(500).json({ error: 'שגיאה בייבוא הקובץ' });
   }
 });

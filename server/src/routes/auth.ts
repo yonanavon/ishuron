@@ -2,7 +2,9 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma';
 import { generateToken, authMiddleware } from '../middleware/auth';
+import { logger } from '../lib/logger';
 
+const log = logger.child({ module: 'route:auth' });
 const router = Router();
 
 router.post('/login', async (req: Request, res: Response) => {
@@ -33,7 +35,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     res.json({ token, role: user.role, username: user.username });
   } catch (error) {
-    console.error('Login error:', error);
+    log.error({ err: error }, 'login error');
     res.status(500).json({ error: 'שגיאת שרת' });
   }
 });

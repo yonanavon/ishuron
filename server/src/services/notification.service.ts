@@ -2,6 +2,9 @@ import { prisma } from '../lib/prisma';
 import { getWhatsAppService } from './whatsapp.service';
 import { renderTemplate } from './template.service';
 import { getIO } from '../socket';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ module: 'notify' });
 
 export async function notifyTeacher(
   teacherPhone: string,
@@ -11,21 +14,20 @@ export async function notifyTeacher(
   const wa = getWhatsAppService();
 
   const jid = wa.resolveJidForSend(teacherPhone);
-  console.log(`[Notify] notifyTeacher phone="${teacherPhone}" jid="${jid}"`);
-  // Try sending interactive buttons first, fallback to text
+  log.debug({ teacherPhone, jid }, 'notifyTeacher');
   try {
     await wa.sendInteractiveButtons(jid, message, [
       { buttonId: 'approve', buttonText: { displayText: '✅ אישור' } },
       { buttonId: 'reject', buttonText: { displayText: '❌ דחייה' } },
     ]);
-    console.log(`[Notify] notifyTeacher SUCCESS (buttons) to ${jid}`);
+    log.debug({ jid, mode: 'buttons' }, 'notifyTeacher success');
   } catch (btnErr) {
-    console.log(`[Notify] buttons failed, falling back to text: ${btnErr}`);
+    log.warn({ err: btnErr }, 'buttons failed, falling back to text');
     try {
       await wa.sendMessage(jid, message);
-      console.log(`[Notify] notifyTeacher SUCCESS (text) to ${jid}`);
+      log.debug({ jid, mode: 'text' }, 'notifyTeacher success');
     } catch (txtErr) {
-      console.error(`[Notify] notifyTeacher FAILED to ${jid}:`, txtErr);
+      log.error({ err: txtErr, jid }, 'notifyTeacher failed');
       throw txtErr;
     }
   }
@@ -56,7 +58,7 @@ export async function notifyGuard(vars: Record<string, string>): Promise<void> {
       await wa.sendMessage(wa.resolveJidForSend(guard.phone), message);
       await logMessage('OUT', guard.phone, message, 'guard_notification');
     } catch (error) {
-      console.error(`Failed to notify guard ${guard.phone}:`, error);
+      log.error({ err: error, guardPhone: guard.phone }, 'failed to notify guard');
     }
   }
 
@@ -78,7 +80,7 @@ async function logMessage(
       data: { direction, phone, content, relatedTo },
     });
   } catch (error) {
-    console.error('Failed to log message:', error);
+    log.error({ err: error }, 'failed to log message');
   }
 }
 

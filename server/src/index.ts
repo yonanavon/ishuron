@@ -9,6 +9,7 @@ import { Server as IOServer } from 'socket.io';
 import path from 'path';
 
 import { setIO } from './socket';
+import { logger } from './lib/logger';
 import authRoutes from './routes/auth';
 import studentRoutes from './routes/students';
 import teacherRoutes from './routes/teachers';
@@ -65,42 +66,46 @@ if (process.env.NODE_ENV === 'production') {
 
 // Socket.IO connection
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  logger.debug({ socketId: socket.id }, 'socket client connected');
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    logger.debug({ socketId: socket.id }, 'socket client disconnected');
   });
 });
 
 const PORT = parseInt(process.env.PORT || '3000');
 
 async function start() {
-  console.log('Starting server...');
-  console.log('PORT:', PORT);
-  console.log('NODE_ENV:', process.env.NODE_ENV);
-  console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'set' : 'NOT SET');
+  logger.info(
+    {
+      port: PORT,
+      nodeEnv: process.env.NODE_ENV,
+      databaseUrl: process.env.DATABASE_URL ? 'set' : 'NOT SET',
+    },
+    'starting server',
+  );
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
+    logger.info({ port: PORT }, 'server listening');
   });
 
   // Load message templates into cache (non-blocking)
   try {
     await loadTemplates();
-    console.log('Templates loaded');
+    logger.info('templates loaded');
   } catch (error) {
-    console.error('Failed to load templates:', error);
+    logger.error({ err: error }, 'failed to load templates');
   }
 
   // Connect WhatsApp (non-blocking)
   try {
     const wa = getWhatsAppService();
-    wa.connect().catch(err => console.error('WhatsApp initial connection error:', err));
+    wa.connect().catch(err => logger.error({ err }, 'whatsapp initial connection error'));
   } catch (error) {
-    console.error('WhatsApp startup error:', error);
+    logger.error({ err: error }, 'whatsapp startup error');
   }
 
   // Start reminder/escalation scheduler
   startScheduler();
 }
 
-start().catch(console.error);
+start().catch(err => logger.fatal({ err }, 'server startup failed'));

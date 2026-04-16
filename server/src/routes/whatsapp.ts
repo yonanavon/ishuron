@@ -3,7 +3,9 @@ import { authMiddleware, adminOnly } from '../middleware/auth';
 import { getWhatsAppService } from '../services/whatsapp.service';
 import { normalizePhone } from '../utils/phone';
 import { logMessage } from '../services/notification.service';
+import { logger } from '../lib/logger';
 
+const log = logger.child({ module: 'route:whatsapp' });
 const router = Router();
 
 router.use(authMiddleware, adminOnly);
@@ -29,7 +31,7 @@ router.post('/restart', async (_req: Request, res: Response) => {
     await wa.restart();
     res.json({ success: true, status: wa.getStatus() });
   } catch (error) {
-    console.error('WhatsApp restart error:', error);
+    log.error({ err: error }, 'whatsapp restart error');
     res.status(500).json({ error: 'שגיאה בהפעלה מחדש' });
   }
 });
@@ -40,7 +42,7 @@ router.post('/logout', async (_req: Request, res: Response) => {
     await wa.logout();
     res.json({ success: true });
   } catch (error) {
-    console.error('WhatsApp logout error:', error);
+    log.error({ err: error }, 'whatsapp logout error');
     res.status(500).json({ error: 'שגיאה בניתוק' });
   }
 });
@@ -59,7 +61,7 @@ router.post('/send-test', async (req: Request, res: Response) => {
     await logMessage('OUT', normalized, message, 'test');
     res.json({ success: true });
   } catch (error: any) {
-    console.error('WhatsApp send test error:', error);
+    log.error({ err: error }, 'whatsapp send test error');
     res.status(500).json({ error: error.message || 'שגיאה בשליחת הודעה' });
   }
 });
