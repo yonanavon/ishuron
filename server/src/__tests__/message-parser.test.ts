@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parseMessage, matchStudentName, parseTeacherResponse, parseEscalationChoice } from '../services/message-parser.service';
+import {
+  parseMessage,
+  matchStudentName,
+  parseTeacherResponse,
+  parseTeacherPickedResponse,
+  parseEscalationChoice,
+} from '../services/message-parser.service';
 
 describe('parseMessage', () => {
   it('should extract time in HH:MM format', () => {
@@ -101,9 +107,107 @@ describe('parseTeacherResponse', () => {
 });
 
 describe('parseEscalationChoice', () => {
-  it('should recognize choices', () => {
+  it('should recognize numeric choices', () => {
     expect(parseEscalationChoice('1')).toBe('wait');
     expect(parseEscalationChoice('2')).toBe('secretary');
     expect(parseEscalationChoice('3')).toBe('principal');
+  });
+
+  it('should prefer keywords over digits', () => {
+    // Text with "מזכירות" must map to secretary even if it also contains a digit.
+    expect(parseEscalationChoice('אני רוצה מזכירות')).toBe('secretary');
+    expect(parseEscalationChoice('מנהל בבקשה')).toBe('principal');
+    expect(parseEscalationChoice('המתן לי')).toBe('wait');
+    expect(parseEscalationChoice('ממתין')).toBe('wait');
+  });
+
+  it('should return null for unknown input', () => {
+    expect(parseEscalationChoice('מה?')).toBeNull();
+    expect(parseEscalationChoice('')).toBeNull();
+  });
+});
+
+describe('parseTeacherPickedResponse', () => {
+  it('should parse "<num> <1|2>" format', () => {
+    expect(parseTeacherPickedResponse('1 1', 3)).toEqual({ index: 0, action: 'approve' });
+    expect(parseTeacherPickedResponse('2 1', 3)).toEqual({ index: 1, action: 'approve' });
+    expect(parseTeacherPickedResponse('3 2', 3)).toEqual({ index: 2, action: 'reject' });
+  });
+
+  it('should accept various separators', () => {
+    expect(parseTeacherPickedResponse('2,1', 3)).toEqual({ index: 1, action: 'approve' });
+    expect(parseTeacherPickedResponse('2-1', 3)).toEqual({ index: 1, action: 'approve' });
+    expect(parseTeacherPickedResponse('2.1', 3)).toEqual({ index: 1, action: 'approve' });
+  });
+
+  it('should accept Hebrew action words', () => {
+    expect(parseTeacherPickedResponse('2 אישור', 3)).toEqual({ index: 1, action: 'approve' });
+    expect(parseTeacherPickedResponse('1 דחייה', 3)).toEqual({ index: 0, action: 'reject' });
+  });
+
+  it('should return null for out-of-range numbers', () => {
+    expect(parseTeacherPickedResponse('5 1', 3)).toBeNull();
+    expect(parseTeacherPickedResponse('0 1', 3)).toBeNull();
+  });
+
+  it('should return null for invalid input', () => {
+    expect(parseTeacherPickedResponse('1', 3)).toBeNull(); // only one token
+    expect(parseTeacherPickedResponse('אישור', 3)).toBeNull(); // no number
+    expect(parseTeacherPickedResponse('2 מה', 3)).toBeNull(); // invalid action
+    expect(parseTeacherPickedResponse('', 3)).toBeNull();
+  });
+});
+
+describe('parseDate — Israel timezone', () => {
+  it('should compute "היום" from Asia/Jerusalem, not server local time', () => {
+    // "היום" should match today as seen in Israel.
+    const result = parseMessage('היום 10:00');
+    expect(result.date).toBeDefined();
+
+    const israelParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Jerusalem',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const get = (t: string) => israelParts.find(p => p.type === t)?.value || '';
+    const israelYear = parseInt(get('year'));
+    const israelMonth = parseInt(get('month')) - 1;
+    const israelDay = parseInt(get('day'));
+
+    expect(result.date!.getFullYear()).toBe(israelYear);
+    expect(result.date!.getMonth()).toBe(israelMonth);
+    expect(result.date!.getDate()).toBe(israelDay);
+  });
+
+  it('should compute "מחר" as Israel-today + 1', () => {
+    const today = parseMessage('היום').date!;
+    const tomorrow = parseMessage('מחר').date!;
+    const diffMs = tomorrow.getTime() - today.getTime();
+    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    expect(diffDays).toBe(1);
+  });
+
+  it('should compute "מחרתיים" as Israel-today + 2', () => {
+    const today = parseMessage('היום').date!;
+    const overmorrow = parseMessage('מחרתיים').date!;
+    const diffDays = Math.round(
+      (overmorrow.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+    );
+    expect(diffDays).toBe(2);
+  });
+
+  it('should resolve Hebrew day name to next occurrence (always > today)', () => {
+    const today = parseMessage('היום').date!;
+    const days = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    for (const day of days) {
+      const target = parseMessage(`יום ${day}`).date!;
+      expect(target.getTime()).toBeGreaterThan(today.getTime());
+      const diffDays = Math.round(
+        (target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+      );
+      expect(diffDays).toBeGreaterThanOrEqual(1);
+      expect(diffDays).toBeLessThanOrEqual(7);
+    }
   });
 });
