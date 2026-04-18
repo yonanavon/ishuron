@@ -29,7 +29,7 @@ const COLUMN_MAP: Record<string, string> = {
   'className': 'className',
 };
 
-export async function importStudents(buffer: Buffer, filename: string): Promise<ImportResult> {
+export async function importStudents(schoolId: number, buffer: Buffer, _filename: string): Promise<ImportResult> {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
@@ -57,7 +57,7 @@ export async function importStudents(buffer: Buffer, filename: string): Promise<
 
     try {
       await prisma.student.upsert({
-        where: { idNumber: mapped.idNumber },
+        where: { schoolId_idNumber: { schoolId, idNumber: mapped.idNumber } },
         update: {
           firstName: mapped.firstName,
           lastName: mapped.lastName,
@@ -68,6 +68,7 @@ export async function importStudents(buffer: Buffer, filename: string): Promise<
           className: mapped.className,
         },
         create: {
+          schoolId,
           firstName: mapped.firstName,
           lastName: mapped.lastName,
           idNumber: mapped.idNumber,

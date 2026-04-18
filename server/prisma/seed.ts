@@ -3,99 +3,130 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+const DEFAULT_TEMPLATES = [
+  {
+    key: 'parent_not_found',
+    name: 'הורה לא נמצא',
+    body: 'שלום, המספר שלך לא מזוהה במערכת. אנא פנה למזכירות בית הספר.',
+  },
+  {
+    key: 'welcome',
+    name: 'הודעת פתיחה',
+    body: 'שלום {{parentName}}, ברוכים הבאים למערכת אישור יציאות בית הספר. אנא שלח את שם התלמיד/ה, תאריך ושעת היציאה.',
+  },
+  {
+    key: 'student_selection',
+    name: 'בחירת תלמיד',
+    body: 'נמצאו מספר תלמידים:\n{{studentList}}\nאנא שלח את המספר המתאים.',
+  },
+  {
+    key: 'datetime_request',
+    name: 'בקשת תאריך ושעה',
+    body: 'עבור {{studentName}}, אנא שלח את תאריך ושעת היציאה הרצויים.\nלדוגמה: "היום בשעה 12:00" או "מחר 10:30"',
+  },
+  {
+    key: 'request_sent_to_teacher',
+    name: 'בקשה נשלחה למורה',
+    body: 'בקשת היציאה עבור {{studentName}} נשלחה ל{{teacherName}}. אנא המתן לאישור.',
+  },
+  {
+    key: 'teacher_approval_request',
+    name: 'בקשת אישור למורה',
+    body: 'שלום {{teacherName}},\nהתקבלה בקשת יציאה:\nתלמיד/ה: {{studentName}}\nכיתה: {{className}}\nתאריך: {{exitDate}}\nשעה: {{exitTime}}\nמבקש: {{parentName}}\n\nאנא השב:\n1. אישור ✅\n2. דחייה ❌',
+  },
+  {
+    key: 'teacher_pending',
+    name: 'ממתין לתשובת מורה',
+    body: 'הבקשה עבור {{studentName}} עדיין ממתינה לאישור {{teacherName}}.\n\n1. המתן\n2. הסלם למזכירות\n3. הסלם למנהל',
+  },
+  {
+    key: 'request_approved',
+    name: 'בקשה אושרה',
+    body: '✅ בקשת היציאה עבור {{studentName}} אושרה על ידי {{teacherName}}.\nתאריך: {{exitDate}}\nשעה: {{exitTime}}',
+  },
+  {
+    key: 'request_rejected',
+    name: 'בקשה נדחתה',
+    body: '❌ בקשת היציאה עבור {{studentName}} נדחתה על ידי {{teacherName}}.',
+  },
+  {
+    key: 'guard_notification',
+    name: 'הודעה לשומר',
+    body: '🚪 יציאה מאושרת:\nתלמיד/ה: {{studentName}}\nכיתה: {{className}}\nשעה: {{exitTime}}\nאושר ע"י: {{teacherName}}',
+  },
+  {
+    key: 'escalated',
+    name: 'הסלמה',
+    body: 'הבקשה עבור {{studentName}} הועברה ל{{escalatedToName}}.',
+  },
+];
+
+async function seedTemplatesForSchool(schoolId: number) {
+  for (const t of DEFAULT_TEMPLATES) {
+    await prisma.messageTemplate.upsert({
+      where: { schoolId_key: { schoolId, key: t.key } },
+      update: { name: t.name, body: t.body },
+      create: { schoolId, key: t.key, name: t.name, body: t.body },
+    });
+  }
+}
+
 async function main() {
-  // Create default admin user
-  const adminPassword = await bcrypt.hash('admin123', 10);
-  await prisma.adminUser.upsert({
-    where: { username: 'admin' },
+  const defaultSchool = await prisma.school.upsert({
+    where: { slug: 'default' },
     update: {},
     create: {
+      slug: 'default',
+      name: 'בית ספר ברירת מחדל',
+      isActive: true,
+    },
+  });
+
+  const superAdminPassword = await bcrypt.hash(
+    process.env.SUPER_ADMIN_PASSWORD || 'superadmin123',
+    10,
+  );
+  const existingSuper = await prisma.adminUser.findFirst({
+    where: { username: 'superadmin', role: 'SUPER_ADMIN', schoolId: null },
+  });
+  if (!existingSuper) {
+    await prisma.adminUser.create({
+      data: {
+        schoolId: null,
+        username: 'superadmin',
+        passwordHash: superAdminPassword,
+        role: 'SUPER_ADMIN',
+      },
+    });
+  }
+
+  const adminPassword = await bcrypt.hash('admin123', 10);
+  await prisma.adminUser.upsert({
+    where: { schoolId_username: { schoolId: defaultSchool.id, username: 'admin' } },
+    update: {},
+    create: {
+      schoolId: defaultSchool.id,
       username: 'admin',
       passwordHash: adminPassword,
       role: 'ADMIN',
     },
   });
 
-  // Create default guard user
   const guardPassword = await bcrypt.hash('guard123', 10);
   await prisma.adminUser.upsert({
-    where: { username: 'guard' },
+    where: { schoolId_username: { schoolId: defaultSchool.id, username: 'guard' } },
     update: {},
     create: {
+      schoolId: defaultSchool.id,
       username: 'guard',
       passwordHash: guardPassword,
       role: 'GUARD',
     },
   });
 
-  // Create default message templates
-  const templates = [
-    {
-      key: 'parent_not_found',
-      name: 'הורה לא נמצא',
-      body: 'שלום, המספר שלך לא מזוהה במערכת. אנא פנה למזכירות בית הספר.',
-    },
-    {
-      key: 'welcome',
-      name: 'הודעת פתיחה',
-      body: 'שלום {{parentName}}, ברוכים הבאים למערכת אישור יציאות בית הספר. אנא שלח את שם התלמיד/ה, תאריך ושעת היציאה.',
-    },
-    {
-      key: 'student_selection',
-      name: 'בחירת תלמיד',
-      body: 'נמצאו מספר תלמידים:\n{{studentList}}\nאנא שלח את המספר המתאים.',
-    },
-    {
-      key: 'datetime_request',
-      name: 'בקשת תאריך ושעה',
-      body: 'עבור {{studentName}}, אנא שלח את תאריך ושעת היציאה הרצויים.\nלדוגמה: "היום בשעה 12:00" או "מחר 10:30"',
-    },
-    {
-      key: 'request_sent_to_teacher',
-      name: 'בקשה נשלחה למורה',
-      body: 'בקשת היציאה עבור {{studentName}} נשלחה ל{{teacherName}}. אנא המתן לאישור.',
-    },
-    {
-      key: 'teacher_approval_request',
-      name: 'בקשת אישור למורה',
-      body: 'שלום {{teacherName}},\nהתקבלה בקשת יציאה:\nתלמיד/ה: {{studentName}}\nכיתה: {{className}}\nתאריך: {{exitDate}}\nשעה: {{exitTime}}\nמבקש: {{parentName}}\n\nאנא השב:\n1. אישור ✅\n2. דחייה ❌',
-    },
-    {
-      key: 'teacher_pending',
-      name: 'ממתין לתשובת מורה',
-      body: 'הבקשה עבור {{studentName}} עדיין ממתינה לאישור {{teacherName}}.\n\n1. המתן\n2. הסלם למזכירות\n3. הסלם למנהל',
-    },
-    {
-      key: 'request_approved',
-      name: 'בקשה אושרה',
-      body: '✅ בקשת היציאה עבור {{studentName}} אושרה על ידי {{teacherName}}.\nתאריך: {{exitDate}}\nשעה: {{exitTime}}',
-    },
-    {
-      key: 'request_rejected',
-      name: 'בקשה נדחתה',
-      body: '❌ בקשת היציאה עבור {{studentName}} נדחתה על ידי {{teacherName}}.',
-    },
-    {
-      key: 'guard_notification',
-      name: 'הודעה לשומר',
-      body: '🚪 יציאה מאושרת:\nתלמיד/ה: {{studentName}}\nכיתה: {{className}}\nשעה: {{exitTime}}\nאושר ע"י: {{teacherName}}',
-    },
-    {
-      key: 'escalated',
-      name: 'הסלמה',
-      body: 'הבקשה עבור {{studentName}} הועברה ל{{escalatedToName}}.',
-    },
-  ];
+  await seedTemplatesForSchool(defaultSchool.id);
 
-  for (const template of templates) {
-    await prisma.messageTemplate.upsert({
-      where: { key: template.key },
-      update: { name: template.name, body: template.body },
-      create: template,
-    });
-  }
-
-  console.log('Seed completed successfully');
+  console.log(`Seed completed — default school id=${defaultSchool.id}, super-admin ready`);
 }
 
 main()

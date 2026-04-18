@@ -49,6 +49,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   try {
+    if (req.schoolId == null) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     const { name, phone, role, className } = req.body;
     if (!name || !phone || !role) {
       res.status(400).json({ error: 'שדות חובה חסרים' });
@@ -57,6 +61,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const teacher = await prisma.teacher.create({
       data: {
+        schoolId: req.schoolId,
         name,
         phone: normalizePhone(String(phone)),
         role,
@@ -119,6 +124,11 @@ router.get('/import-template', (_req: Request, res: Response) => {
 // Import teachers from Excel/CSV
 router.post('/import', upload.single('file'), async (req: Request, res: Response) => {
   try {
+    if (req.schoolId == null) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
+    const schoolId = req.schoolId;
     if (!req.file) {
       res.status(400).json({ error: 'קובץ לא נמצא' });
       return;
@@ -154,9 +164,9 @@ router.post('/import', upload.single('file'), async (req: Request, res: Response
         const normalized = normalizePhone(phone);
         const typedRole = role as any;
         await prisma.teacher.upsert({
-          where: { phone: normalized },
+          where: { schoolId_phone: { schoolId, phone: normalized } },
           update: { name, role: typedRole, className: className || null },
-          create: { name, phone: normalized, role: typedRole, className: className || null },
+          create: { schoolId, name, phone: normalized, role: typedRole, className: className || null },
         });
         result.imported++;
       } catch (error: any) {

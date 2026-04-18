@@ -24,12 +24,17 @@ router.get('/', async (_req: Request, res: Response) => {
 
 router.put('/', async (req: Request, res: Response) => {
   try {
+    if (req.schoolId == null) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
+    const schoolId = req.schoolId;
     const updates = req.body as Record<string, string>;
     for (const [key, value] of Object.entries(updates)) {
       await prisma.setting.upsert({
-        where: { key },
+        where: { schoolId_key: { schoolId, key } },
         update: { value: String(value) },
-        create: { key, value: String(value) },
+        create: { schoolId, key, value: String(value) },
       });
     }
     res.json({ success: true });

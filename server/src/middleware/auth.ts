@@ -4,7 +4,8 @@ import jwt from 'jsonwebtoken';
 export interface AuthPayload {
   userId: number;
   username: string;
-  role: 'ADMIN' | 'GUARD';
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'GUARD';
+  schoolId: number | null;
 }
 
 declare global {
@@ -32,6 +33,19 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     const token = authHeader.slice(7);
     const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload;
     req.user = decoded;
+
+    // Cross-tenant guard: a non-super-admin token may only access its own school's subdomain.
+    if (decoded.role !== 'SUPER_ADMIN') {
+      if (req.schoolId == null) {
+        res.status(403).json({ error: 'נדרשת גישה דרך subdomain של בית ספר' });
+        return;
+      }
+      if (decoded.schoolId !== req.schoolId) {
+        res.status(403).json({ error: 'הטוקן שייך לבית ספר אחר' });
+        return;
+      }
+    }
+
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
@@ -39,7 +53,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 }
 
 export function adminOnly(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.role !== 'ADMIN') {
+  if (req.user?.role !== 'ADMIN' && req.user?.role !== 'SUPER_ADMIN') {
     res.status(403).json({ error: 'אין הרשאת מנהל' });
     return;
   }
@@ -47,8 +61,17 @@ export function adminOnly(req: Request, res: Response, next: NextFunction): void
 }
 
 export function guardOrAdmin(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.role !== 'ADMIN' && req.user?.role !== 'GUARD') {
+  const role = req.user?.role;
+  if (role !== 'ADMIN' && role !== 'GUARD' && role !== 'SUPER_ADMIN') {
     res.status(403).json({ error: 'אין הרשאה' });
+    return;
+  }
+  next();
+}
+
+export function superAdminOnly(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.role !== 'SUPER_ADMIN') {
+    res.status(403).json({ error: 'נדרשת הרשאת SUPER_ADMIN' });
     return;
   }
   next();

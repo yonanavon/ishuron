@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware, adminOnly } from '../middleware/auth';
-import { getWhatsAppService } from '../services/whatsapp.service';
+import { getWhatsAppRegistry } from '../services/whatsapp-registry';
 import { normalizePhone } from '../utils/phone';
 import { logMessage } from '../services/notification.service';
 import { logger } from '../lib/logger';
@@ -10,13 +10,26 @@ const router = Router();
 
 router.use(authMiddleware, adminOnly);
 
-router.get('/status', (_req: Request, res: Response) => {
-  const wa = getWhatsAppService();
+function waForReq(req: Request) {
+  if (req.schoolId == null) return null;
+  return getWhatsAppRegistry().get(req.schoolId);
+}
+
+router.get('/status', (req: Request, res: Response) => {
+  const wa = waForReq(req);
+  if (!wa) {
+    res.status(400).json({ error: 'בית ספר לא מזוהה' });
+    return;
+  }
   res.json({ status: wa.getStatus() });
 });
 
-router.get('/qr', (_req: Request, res: Response) => {
-  const wa = getWhatsAppService();
+router.get('/qr', (req: Request, res: Response) => {
+  const wa = waForReq(req);
+  if (!wa) {
+    res.status(400).json({ error: 'בית ספר לא מזוהה' });
+    return;
+  }
   const qr = wa.getQR();
   if (qr) {
     res.json({ qr });
@@ -25,9 +38,13 @@ router.get('/qr', (_req: Request, res: Response) => {
   }
 });
 
-router.post('/restart', async (_req: Request, res: Response) => {
+router.post('/restart', async (req: Request, res: Response) => {
   try {
-    const wa = getWhatsAppService();
+    const wa = waForReq(req);
+    if (!wa) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     await wa.restart();
     res.json({ success: true, status: wa.getStatus() });
   } catch (error) {
@@ -36,9 +53,13 @@ router.post('/restart', async (_req: Request, res: Response) => {
   }
 });
 
-router.post('/logout', async (_req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
   try {
-    const wa = getWhatsAppService();
+    const wa = waForReq(req);
+    if (!wa) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     await wa.logout();
     res.json({ success: true });
   } catch (error) {
@@ -54,7 +75,11 @@ router.post('/send-test', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'נדרש מספר טלפון והודעה' });
       return;
     }
-    const wa = getWhatsAppService();
+    const wa = waForReq(req);
+    if (!wa) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     const normalized = normalizePhone(phone);
     const jid = wa.resolveJidForSend(normalized);
     await wa.sendMessage(jid, message);
@@ -66,10 +91,13 @@ router.post('/send-test', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/last-received', (_req: Request, res: Response) => {
-  const wa = getWhatsAppService();
-  const last = wa.getLastReceivedMessage();
-  res.json(last);
+router.get('/last-received', (req: Request, res: Response) => {
+  const wa = waForReq(req);
+  if (!wa) {
+    res.status(400).json({ error: 'בית ספר לא מזוהה' });
+    return;
+  }
+  res.json(wa.getLastReceivedMessage());
 });
 
 export default router;

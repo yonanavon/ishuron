@@ -1,32 +1,53 @@
-import { prisma } from '../lib/prisma';
+import { prisma, runWithTenant } from '../lib/prisma';
 
-// Cache templates in memory
-let templateCache: Map<string, string> = new Map();
-let cacheLoaded = false;
+// Per-school template cache: Map<schoolId, Map<key, body>>
+const caches = new Map<number, Map<string, string>>();
 
-export async function loadTemplates(): Promise<void> {
-  const templates = await prisma.messageTemplate.findMany();
-  templateCache = new Map(templates.map(t => [t.key, t.body]));
-  cacheLoaded = true;
+async function loadForSchool(schoolId: number): Promise<Map<string, string>> {
+  const templates = await runWithTenant({ schoolId }, () =>
+    prisma.messageTemplate.findMany(),
+  );
+  const map = new Map(templates.map((t) => [t.key, t.body]));
+  caches.set(schoolId, map);
+  return map;
 }
 
-export async function renderTemplate(key: string, vars: Record<string, string> = {}): Promise<string> {
-  if (!cacheLoaded) await loadTemplates();
+/**
+ * Pre-warm caches for all active schools. Called once at startup but
+ * renderTemplate also lazily loads on miss, so this is optional.
+ */
+export async function loadTemplates(): Promise<void> {
+  const schools = await runWithTenant({ schoolId: null, bypass: true }, () =>
+    prisma.school.findMany({ where: { isActive: true }, select: { id: true } }),
+  );
+  for (const s of schools) {
+    await loadForSchool(s.id);
+  }
+}
 
-  let body = templateCache.get(key);
+export async function renderTemplate(
+  schoolId: number,
+  key: string,
+  vars: Record<string, string> = {},
+): Promise<string> {
+  let cache = caches.get(schoolId);
+  if (!cache) cache = await loadForSchool(schoolId);
+
+  let body = cache.get(key);
   if (!body) {
-    // Try loading from DB in case it was added after cache
-    await loadTemplates();
-    body = templateCache.get(key);
+    // Refresh in case template was added/updated after cache load.
+    cache = await loadForSchool(schoolId);
+    body = cache.get(key);
     if (!body) return `[תבנית "${key}" לא נמצאה]`;
   }
 
-  // Replace {{variable}} placeholders
-  return body.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-    return vars[varName] ?? match;
-  });
+  return body.replace(/\{\{(\w+)\}\}/g, (match, varName) => vars[varName] ?? match);
 }
 
-export function invalidateTemplateCache(): void {
-  cacheLoaded = false;
+export function invalidateTemplateCache(schoolId?: number): void {
+  if (schoolId == null) {
+    caches.clear();
+  } else {
+    caches.delete(schoolId);
+  }
 }

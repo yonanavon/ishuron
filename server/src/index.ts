@@ -10,6 +10,7 @@ import path from 'path';
 
 import { setIO } from './socket';
 import { logger } from './lib/logger';
+import { tenantMiddleware } from './middleware/tenant';
 import authRoutes from './routes/auth';
 import studentRoutes from './routes/students';
 import teacherRoutes from './routes/teachers';
@@ -18,9 +19,9 @@ import logRoutes from './routes/logs';
 import exitRoutes from './routes/exits';
 import whatsappRoutes from './routes/whatsapp';
 import settingsRoutes from './routes/settings';
-import { getWhatsAppService } from './services/whatsapp.service';
 import { loadTemplates } from './services/template.service';
 import { startScheduler } from './services/scheduler.service';
+import { getWhatsAppRegistry } from './services/whatsapp-registry';
 
 const app = express();
 const server = http.createServer(app);
@@ -40,7 +41,18 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// API Routes
+// Health check (no tenant needed)
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Tenant resolution MUST come before auth and all scoped routes.
+// It sets req.schoolId and wraps downstream handlers in AsyncLocalStorage
+// so the Prisma extension auto-injects schoolId.
+app.use('/api', tenantMiddleware);
+
+// API Routes (all tenant-scoped; super-admin routes will mount under /api/super
+// and rely on the reserved subdomain to set bypass=true)
 app.use('/api/auth', authRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/teachers', teacherRoutes);
@@ -49,11 +61,6 @@ app.use('/api/logs', logRoutes);
 app.use('/api/exits', exitRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/settings', settingsRoutes);
-
-// Health check
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
 // Serve React app in production
 if (process.env.NODE_ENV === 'production') {
@@ -88,7 +95,7 @@ async function start() {
     logger.info({ port: PORT }, 'server listening');
   });
 
-  // Load message templates into cache (non-blocking)
+  // Load message templates (per-school cache primed lazily from here)
   try {
     await loadTemplates();
     logger.info('templates loaded');
@@ -96,15 +103,15 @@ async function start() {
     logger.error({ err: error }, 'failed to load templates');
   }
 
-  // Connect WhatsApp (non-blocking)
+  // Connect WhatsApp for every active school (non-blocking per school).
   try {
-    const wa = getWhatsAppService();
-    wa.connect().catch(err => logger.error({ err }, 'whatsapp initial connection error'));
+    const registry = getWhatsAppRegistry();
+    registry.connectAll().catch((err) => logger.error({ err }, 'whatsapp registry connectAll error'));
   } catch (error) {
-    logger.error({ err: error }, 'whatsapp startup error');
+    logger.error({ err: error }, 'whatsapp registry startup error');
   }
 
-  // Start reminder/escalation scheduler
+  // Start reminder/escalation scheduler (iterates over all schools internally)
   startScheduler();
 }
 

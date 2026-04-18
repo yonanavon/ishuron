@@ -1,24 +1,23 @@
 import QRCode from 'qrcode';
 import { usePrismaAuthState } from './whatsapp-auth-store';
 import { handleIncomingMessage } from './bot.service';
-import { getIO } from '../socket';
+import { emitToSchool } from '../socket';
 import { jidToPhone } from '../utils/phone';
 import { logMessage } from './notification.service';
 import { logger } from '../lib/logger';
-
-const log = logger.child({ module: 'whatsapp' });
+import { prisma, runWithTenant } from '../lib/prisma';
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'qr';
 
-const RECONNECT_WINDOW_MS = 10 * 60 * 1000; // 10 min
+const RECONNECT_WINDOW_MS = 10 * 60 * 1000;
 const RECONNECT_WINDOW_LIMIT = 5;
-const RECONNECT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour pause if limit hit
+const RECONNECT_COOLDOWN_MS = 60 * 60 * 1000;
 const SEND_MIN_GAP_MS = 1500;
 const PREFETCH_CHUNK = 50;
 const PREFETCH_CHUNK_GAP_MS = 2000;
 const LID_NEGATIVE_TTL_MS = 5 * 60 * 1000;
 
-class WhatsAppService {
+export class WhatsAppService {
   private socket: any = null;
   private status: ConnectionStatus = 'disconnected';
   private currentQR: string | null = null;
@@ -27,14 +26,22 @@ class WhatsAppService {
   private recentReconnects: number[] = [];
   private cooldownUntil = 0;
   private lastReceived: { phone: string; text: string; timestamp: string } | null = null;
-  // LID <-> phone mapping cache
   private lidToPhone = new Map<string, string>();
   private phoneToLid = new Map<string, string>();
   private lidNegativeCache = new Map<string, number>();
   private pendingLidResolves = new Map<string, Promise<string | null>>();
-  // Global send queue — serializes outgoing sends with a minimum gap
   private sendQueue: Promise<any> = Promise.resolve();
   private lastSentAt = 0;
+
+  private readonly log;
+
+  constructor(public readonly schoolId: number) {
+    this.log = logger.child({ module: 'whatsapp', schoolId });
+  }
+
+  private withTenant<T>(fn: () => Promise<T>): Promise<T> {
+    return runWithTenant({ schoolId: this.schoolId }, fn);
+  }
 
   async connect(): Promise<void> {
     try {
@@ -45,7 +52,7 @@ class WhatsAppService {
       const makeWASocket = baileys.default;
       const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = baileys;
 
-      const { state, saveCreds } = await usePrismaAuthState();
+      const { state, saveCreds } = await usePrismaAuthState(this.schoolId);
       const { version } = await fetchLatestBaileysVersion();
 
       this.socket = makeWASocket({
@@ -58,7 +65,6 @@ class WhatsAppService {
         generateHighQualityLinkPreview: false,
       });
 
-      // Handle connection updates
       this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -73,41 +79,38 @@ class WhatsAppService {
           this.currentQR = null;
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMsg = lastDisconnect?.error?.message || 'unknown';
-          log.warn({ statusCode, errorMsg }, 'whatsapp connection closed');
+          this.log.warn({ statusCode, errorMsg }, 'whatsapp connection closed');
 
           const shouldReconnect = this.shouldReconnectFor(statusCode, DisconnectReason);
 
           if (statusCode === DisconnectReason.loggedOut) {
-            log.info('whatsapp logged out, clearing session');
-            const { prisma } = await import('../lib/prisma.js');
-            await prisma.whatsappSession.deleteMany();
+            this.log.info('whatsapp logged out, clearing session');
+            await this.withTenant(() => prisma.whatsappSession.deleteMany({}));
             this.status = 'disconnected';
             this.emitStatus();
           } else if (!shouldReconnect) {
-            // WhatsApp is signaling us to stop (e.g. connectionReplaced).
-            // Do not auto-reconnect — requires manual restart.
             this.status = 'disconnected';
             this.emitStatus();
             this.emitError(`החיבור נסגר על ידי וואטסאפ (קוד ${statusCode}). לחץ "נתק וחבר מחדש" כדי להתחבר שוב.`);
-            log.warn({ statusCode }, 'disconnect reason not auto-reconnectable');
+            this.log.warn({ statusCode }, 'disconnect reason not auto-reconnectable');
           } else if (Date.now() < this.cooldownUntil) {
             const waitMs = this.cooldownUntil - Date.now();
             this.status = 'disconnected';
             this.emitStatus();
             this.emitError(`החיבור בקירור עקב ריבוי ניתוקים. נסה שוב בעוד כ-${Math.ceil(waitMs / 60000)} דקות.`);
-            log.warn({ waitMs }, 'reconnect suppressed: in cooldown window');
+            this.log.warn({ waitMs }, 'reconnect suppressed: in cooldown window');
           } else if (this.hitReconnectWindowLimit()) {
             this.cooldownUntil = Date.now() + RECONNECT_COOLDOWN_MS;
             this.recentReconnects = [];
             this.status = 'disconnected';
             this.emitStatus();
             this.emitError(`זוהו ניתוקים חוזרים — החיבור בקירור לשעה כדי למנוע חסימת חשבון.`);
-            log.error({ cooldownUntil: this.cooldownUntil }, 'entering reconnect cooldown');
+            this.log.error({ cooldownUntil: this.cooldownUntil }, 'entering reconnect cooldown');
           } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             this.recentReconnects.push(Date.now());
             const delay = this.computeBackoffMs(this.reconnectAttempts);
-            log.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'whatsapp reconnecting');
+            this.log.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'whatsapp reconnecting');
             this.status = 'connecting';
             this.emitStatus();
             setTimeout(() => this.connect(), delay);
@@ -115,7 +118,7 @@ class WhatsAppService {
             this.status = 'disconnected';
             this.emitStatus();
             this.emitError(`החיבור נכשל לאחר ${this.maxReconnectAttempts} ניסיונות (שגיאה: ${errorMsg}). נסה "נתק וחבר מחדש".`);
-            log.error('whatsapp max reconnect attempts reached');
+            this.log.error('whatsapp max reconnect attempts reached');
           }
         }
 
@@ -124,26 +127,23 @@ class WhatsAppService {
           this.currentQR = null;
           this.reconnectAttempts = 0;
           this.emitStatus();
-          log.info('whatsapp connected successfully');
-          this.prefetchLidMappings().catch(err =>
-            log.error({ err }, 'error prefetching LID mappings'),
+          this.log.info('whatsapp connected successfully');
+          this.prefetchLidMappings().catch((err) =>
+            this.log.error({ err }, 'error prefetching LID mappings'),
           );
         }
       });
 
-      // Save credentials on update
       this.socket.ev.on('creds.update', saveCreds);
 
-      // Listen for phone number share events (LID -> phone mapping)
       this.socket.ev.on('chats.phoneNumberShare', (data: { lid: string; jid: string }) => {
         const lidId = data.lid.split('@')[0];
         const phone = data.jid.split('@')[0].split(':')[0];
         this.lidToPhone.set(lidId, phone);
         this.phoneToLid.set(phone, lidId);
-        log.debug({ lidId, phone }, 'phoneNumberShare mapping');
+        this.log.debug({ lidId, phone }, 'phoneNumberShare mapping');
       });
 
-      // Handle incoming messages
       this.socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
         if (type !== 'notify') return;
 
@@ -158,7 +158,6 @@ class WhatsAppService {
             msg.message.buttonsResponseMessage?.selectedButtonId ||
             '';
 
-          // Resolve phone number — LID JIDs need lookup
           let phone = jidToPhone(rawJid);
           const isLid = rawJid.endsWith('@lid');
 
@@ -167,54 +166,52 @@ class WhatsAppService {
             if (cached) {
               phone = cached;
             } else {
-              // Try to resolve via onWhatsApp reverse lookup is not possible,
-              // so we log and skip — admin must use phone-format JIDs
-              log.debug({ rawJid }, 'LID not cached, attempting resolve');
+              this.log.debug({ rawJid }, 'LID not cached, attempting resolve');
               const resolved = await this.resolveLidToPhone(rawJid);
               if (resolved) {
                 phone = resolved;
               } else {
-                log.warn({ rawJid }, 'could not resolve LID to phone, skipping');
+                this.log.warn({ rawJid }, 'could not resolve LID to phone, skipping');
                 continue;
               }
             }
           }
 
-          log.debug({ rawJid, phone, text }, 'incoming message');
+          this.log.debug({ rawJid, phone, text }, 'incoming message');
 
           if (!text || !phone) continue;
 
           this.lastReceived = { phone, text, timestamp: new Date().toISOString() };
-          await logMessage('IN', phone, text);
 
-          try {
-            await handleIncomingMessage(phone, text, rawJid);
-          } catch (error) {
-            log.error({ err: error, phone }, 'error handling message');
-          }
+          // All downstream DB work runs in this school's tenant context.
+          await this.withTenant(async () => {
+            await logMessage('IN', phone, text);
+            try {
+              await handleIncomingMessage(this.schoolId, phone, text, rawJid);
+            } catch (error) {
+              this.log.error({ err: error, phone }, 'error handling message');
+            }
+          });
         }
       });
     } catch (error) {
-      log.error({ err: error }, 'whatsapp connection error');
+      this.log.error({ err: error }, 'whatsapp connection error');
       this.status = 'disconnected';
       this.emitStatus();
       this.emitError(error instanceof Error ? error.message : 'שגיאה בחיבור לוואטסאפ');
     }
   }
 
-  /**
-   * Only reconnect for benign/transient disconnects. Reasons like
-   * connectionReplaced indicate WhatsApp wants us to stop — blindly
-   * reconnecting looks like a rogue client and risks a ban.
-   */
   private shouldReconnectFor(statusCode: number | undefined, DisconnectReason: any): boolean {
     if (!statusCode) return true;
-    const reconnectable = new Set<number>([
-      DisconnectReason.connectionClosed,
-      DisconnectReason.connectionLost,
-      DisconnectReason.timedOut,
-      DisconnectReason.restartRequired,
-    ].filter((v) => typeof v === 'number'));
+    const reconnectable = new Set<number>(
+      [
+        DisconnectReason.connectionClosed,
+        DisconnectReason.connectionLost,
+        DisconnectReason.timedOut,
+        DisconnectReason.restartRequired,
+      ].filter((v) => typeof v === 'number'),
+    );
     return reconnectable.has(statusCode);
   }
 
@@ -230,20 +227,20 @@ class WhatsAppService {
     return base + jitter;
   }
 
-  /**
-   * Pre-fetch LID mappings for all known phone numbers on connect.
-   */
   private async prefetchLidMappings(): Promise<void> {
-    const { prisma } = await import('../lib/prisma.js');
-    const students = await prisma.student.findMany({
-      select: { parent1Phone: true, parent2Phone: true },
+    const { students, teachers } = await this.withTenant(async () => {
+      const students = await prisma.student.findMany({
+        select: { parent1Phone: true, parent2Phone: true },
+      });
+      const teachers = await prisma.teacher.findMany({ select: { phone: true } });
+      return { students, teachers };
     });
+
     const phones = new Set<string>();
     for (const s of students) {
       if (s.parent1Phone) phones.add(s.parent1Phone);
       if (s.parent2Phone) phones.add(s.parent2Phone);
     }
-    const teachers = await prisma.teacher.findMany({ select: { phone: true } });
     for (const t of teachers) {
       if (t.phone) phones.add(t.phone);
     }
@@ -251,7 +248,7 @@ class WhatsAppService {
     if (phones.size === 0 || !this.socket) return;
 
     const phoneArray = [...phones];
-    log.debug({ count: phoneArray.length, chunk: PREFETCH_CHUNK }, 'prefetching LID mappings');
+    this.log.debug({ count: phoneArray.length, chunk: PREFETCH_CHUNK }, 'prefetching LID mappings');
     let mapped = 0;
     for (let i = 0; i < phoneArray.length; i += PREFETCH_CHUNK) {
       if (!this.socket || this.status !== 'connected') return;
@@ -261,8 +258,7 @@ class WhatsAppService {
         if (results) {
           for (const r of results) {
             if (r.lid) {
-              const lidId =
-                typeof r.lid === 'string' ? r.lid.split('@')[0] : String(r.lid);
+              const lidId = typeof r.lid === 'string' ? r.lid.split('@')[0] : String(r.lid);
               const rPhone = r.jid.split('@')[0].split(':')[0];
               this.lidToPhone.set(lidId, rPhone);
               this.phoneToLid.set(rPhone, lidId);
@@ -271,23 +267,15 @@ class WhatsAppService {
           }
         }
       } catch (err) {
-        log.error({ err, chunkStart: i }, 'prefetchLidMappings chunk error');
+        this.log.error({ err, chunkStart: i }, 'prefetchLidMappings chunk error');
       }
       if (i + PREFETCH_CHUNK < phoneArray.length) {
         await new Promise((r) => setTimeout(r, PREFETCH_CHUNK_GAP_MS));
       }
     }
-    log.info({ mapped }, 'prefetched LID mappings');
+    this.log.info({ mapped }, 'prefetched LID mappings');
   }
 
-  /**
-   * Resolve a LID to a phone number by querying contacts in the DB
-   * and using onWhatsApp to find which one maps to this LID.
-   *
-   * Negative-caches failed lookups for LID_NEGATIVE_TTL_MS to prevent
-   * repeated bulk onWhatsApp queries (rate-limit risk), and dedupes
-   * concurrent resolves for the same LID.
-   */
   private async resolveLidToPhone(lidJid: string): Promise<string | null> {
     const lidId = lidJid.split('@')[0];
 
@@ -312,18 +300,21 @@ class WhatsAppService {
     }
   }
 
-  private async doResolveLidToPhone(lidJid: string, lidId: string): Promise<string | null> {
+  private async doResolveLidToPhone(_lidJid: string, lidId: string): Promise<string | null> {
     try {
-      const { prisma } = await import('../lib/prisma.js');
-      const students = await prisma.student.findMany({
-        select: { parent1Phone: true, parent2Phone: true },
+      const { students, teachers } = await this.withTenant(async () => {
+        const students = await prisma.student.findMany({
+          select: { parent1Phone: true, parent2Phone: true },
+        });
+        const teachers = await prisma.teacher.findMany({ select: { phone: true } });
+        return { students, teachers };
       });
+
       const phones = new Set<string>();
       for (const s of students) {
         if (s.parent1Phone) phones.add(s.parent1Phone);
         if (s.parent2Phone) phones.add(s.parent2Phone);
       }
-      const teachers = await prisma.teacher.findMany({ select: { phone: true } });
       for (const t of teachers) {
         if (t.phone) phones.add(t.phone);
       }
@@ -331,7 +322,7 @@ class WhatsAppService {
       if (!this.socket || phones.size === 0) return null;
 
       const phoneArray = [...phones];
-      log.debug({ count: phoneArray.length }, 'resolving LID, querying known phones');
+      this.log.debug({ count: phoneArray.length }, 'resolving LID, querying known phones');
       let found: string | null = null;
       for (let i = 0; i < phoneArray.length; i += PREFETCH_CHUNK) {
         if (!this.socket) break;
@@ -341,8 +332,7 @@ class WhatsAppService {
           if (results) {
             for (const r of results) {
               if (r.lid) {
-                const rLidId =
-                  typeof r.lid === 'string' ? r.lid.split('@')[0] : r.lid.toString?.();
+                const rLidId = typeof r.lid === 'string' ? r.lid.split('@')[0] : r.lid.toString?.();
                 const rPhone = r.jid.split('@')[0].split(':')[0];
                 this.lidToPhone.set(rLidId, rPhone);
                 this.phoneToLid.set(rPhone, rLidId);
@@ -353,7 +343,7 @@ class WhatsAppService {
             }
           }
         } catch (err) {
-          log.error({ err, chunkStart: i }, 'resolveLidToPhone chunk error');
+          this.log.error({ err, chunkStart: i }, 'resolveLidToPhone chunk error');
         }
         if (found) return found;
         if (i + PREFETCH_CHUNK < phoneArray.length) {
@@ -361,15 +351,11 @@ class WhatsAppService {
         }
       }
     } catch (err) {
-      log.error({ err }, 'error resolving LID to phone');
+      this.log.error({ err }, 'error resolving LID to phone');
     }
     return null;
   }
 
-  /**
-   * Resolve a phone number (972...) to the correct JID for sending.
-   * Returns LID JID if known, otherwise falls back to standard JID.
-   */
   resolveJidForSend(phone: string): string {
     const lidId = this.phoneToLid.get(phone);
     if (lidId) {
@@ -378,11 +364,6 @@ class WhatsAppService {
     return `${phone}@s.whatsapp.net`;
   }
 
-  /**
-   * Serialize all outgoing sends through a single queue with a minimum gap
-   * between sends. Bursting messages (e.g. multi-guard notifications or
-   * simultaneous approvals) looks bot-like to WhatsApp anti-abuse heuristics.
-   */
   private enqueueSend<T>(label: string, fn: () => Promise<T>): Promise<T> {
     const task = this.sendQueue.then(async () => {
       const wait = this.lastSentAt + SEND_MIN_GAP_MS - Date.now();
@@ -393,9 +374,8 @@ class WhatsAppService {
         this.lastSentAt = Date.now();
       }
     });
-    // Never let a rejected send poison the queue for subsequent sends.
     this.sendQueue = task.catch(() => undefined);
-    log.debug({ label }, 'send queued');
+    this.log.debug({ label }, 'send queued');
     return task;
   }
 
@@ -409,7 +389,7 @@ class WhatsAppService {
   async sendInteractiveButtons(
     jid: string,
     text: string,
-    buttons: Array<{ buttonId: string; buttonText: { displayText: string } }>
+    buttons: Array<{ buttonId: string; buttonText: { displayText: string } }>,
   ): Promise<void> {
     if (!this.socket || this.status !== 'connected') {
       throw new Error('WhatsApp not connected');
@@ -434,25 +414,21 @@ class WhatsAppService {
     this.status = 'disconnected';
     this.currentQR = null;
     this.emitStatus();
-    // Don't await connect() — it sets up event listeners and returns,
-    // but Baileys continues in the background. Errors are logged.
-    this.connect().catch(err => log.error({ err }, 'whatsapp restart connect error'));
+    this.connect().catch((err) => this.log.error({ err }, 'whatsapp restart connect error'));
   }
 
   async logout(): Promise<void> {
     if (this.socket) {
       try {
         await this.socket.logout();
-      } catch (e) {
-        // ignore — socket may already be closed
+      } catch {
+        // socket may already be closed
       }
       this.socket.end(undefined);
       this.socket = null;
     }
-    // Clear all auth data from DB
-    const { prisma } = await import('../lib/prisma.js');
-    await prisma.whatsappSession.deleteMany();
-    log.info('whatsapp session cleared from DB');
+    await this.withTenant(() => prisma.whatsappSession.deleteMany({}));
+    this.log.info('whatsapp session cleared from DB');
     this.reconnectAttempts = 0;
     this.recentReconnects = [];
     this.cooldownUntil = 0;
@@ -474,32 +450,16 @@ class WhatsAppService {
   }
 
   private emitStatus(): void {
-    const io = getIO();
-    if (io) {
-      io.emit('whatsapp:status', { status: this.status });
-    }
+    emitToSchool(this.schoolId, 'whatsapp:status', { status: this.status });
   }
 
   private emitQR(): void {
-    const io = getIO();
-    if (io && this.currentQR) {
-      io.emit('whatsapp:qr', { qr: this.currentQR });
+    if (this.currentQR) {
+      emitToSchool(this.schoolId, 'whatsapp:qr', { qr: this.currentQR });
     }
   }
 
   private emitError(message: string): void {
-    const io = getIO();
-    if (io) {
-      io.emit('whatsapp:error', { error: message });
-    }
+    emitToSchool(this.schoolId, 'whatsapp:error', { error: message });
   }
-}
-
-let instance: WhatsAppService | null = null;
-
-export function getWhatsAppService(): WhatsAppService {
-  if (!instance) {
-    instance = new WhatsAppService();
-  }
-  return instance;
 }

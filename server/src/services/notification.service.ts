@@ -1,20 +1,21 @@
 import { prisma } from '../lib/prisma';
-import { getWhatsAppService } from './whatsapp.service';
+import { getWhatsAppRegistry } from './whatsapp-registry';
 import { renderTemplate } from './template.service';
-import { getIO } from '../socket';
+import { emitToSchool } from '../socket';
 import { logger } from '../lib/logger';
 
 const log = logger.child({ module: 'notify' });
 
 export async function notifyTeacher(
+  schoolId: number,
   teacherPhone: string,
-  vars: Record<string, string>
+  vars: Record<string, string>,
 ): Promise<void> {
-  const message = await renderTemplate('teacher_approval_request', vars);
-  const wa = getWhatsAppService();
+  const message = await renderTemplate(schoolId, 'teacher_approval_request', vars);
+  const wa = getWhatsAppRegistry().get(schoolId);
 
   const jid = wa.resolveJidForSend(teacherPhone);
-  log.debug({ teacherPhone, jid }, 'notifyTeacher');
+  log.debug({ schoolId, teacherPhone, jid }, 'notifyTeacher');
   try {
     await wa.sendInteractiveButtons(jid, message, [
       { buttonId: 'approve', buttonText: { displayText: '✅ אישור' } },
@@ -36,22 +37,25 @@ export async function notifyTeacher(
 }
 
 export async function notifyParent(
+  schoolId: number,
   parentPhone: string,
   templateKey: string,
-  vars: Record<string, string>
+  vars: Record<string, string>,
 ): Promise<void> {
-  const message = await renderTemplate(templateKey, vars);
-  const wa = getWhatsAppService();
+  const message = await renderTemplate(schoolId, templateKey, vars);
+  const wa = getWhatsAppRegistry().get(schoolId);
   await wa.sendMessage(wa.resolveJidForSend(parentPhone), message);
   await logMessage('OUT', parentPhone, message, templateKey);
 }
 
-export async function notifyGuard(vars: Record<string, string>): Promise<void> {
-  const message = await renderTemplate('guard_notification', vars);
+export async function notifyGuard(
+  schoolId: number,
+  vars: Record<string, string>,
+): Promise<void> {
+  const message = await renderTemplate(schoolId, 'guard_notification', vars);
 
-  // Send to all guards via WhatsApp
   const guards = await prisma.teacher.findMany({ where: { role: 'GUARD' } });
-  const wa = getWhatsAppService();
+  const wa = getWhatsAppRegistry().get(schoolId);
 
   for (const guard of guards) {
     try {
@@ -62,22 +66,18 @@ export async function notifyGuard(vars: Record<string, string>): Promise<void> {
     }
   }
 
-  // Also push via WebSocket to guard dashboard
-  const io = getIO();
-  if (io) {
-    io.emit('exit:approved', vars);
-  }
+  emitToSchool(schoolId, 'exit:approved', vars);
 }
 
 async function logMessage(
   direction: 'IN' | 'OUT',
   phone: string,
   content: string,
-  relatedTo?: string
+  relatedTo?: string,
 ): Promise<void> {
   try {
     await prisma.messageLog.create({
-      data: { direction, phone, content, relatedTo },
+      data: { direction, phone, content, relatedTo } as any,
     });
   } catch (error) {
     log.error({ err: error }, 'failed to log message');

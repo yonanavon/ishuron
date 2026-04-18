@@ -28,6 +28,7 @@ enum MessageDirection {
 }
 
 enum AdminRole {
+  SUPER_ADMIN
   ADMIN
   GUARD
 }
@@ -40,11 +41,36 @@ enum ConversationState {
   COMPLETED
 }
 
+model School {
+  id        Int      @id @default(autoincrement())
+  slug      String   @unique
+  name      String
+  logoUrl   String?
+  timezone  String   @default("Asia/Jerusalem")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  students         Student[]
+  teachers         Teacher[]
+  adminUsers       AdminUser[]
+  exitRequests     ExitRequest[]
+  conversations    Conversation[]
+  messageTemplates MessageTemplate[]
+  messageLogs      MessageLog[]
+  settings         Setting[]
+  whatsappSessions WhatsappSession[]
+
+  @@map("schools")
+}
+
 model Student {
   id           Int      @id @default(autoincrement())
+  schoolId     Int
+  school       School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   firstName    String
   lastName     String
-  idNumber     String   @unique
+  idNumber     String
   parent1Name  String
   parent1Phone String
   parent2Name  String?
@@ -55,70 +81,89 @@ model Student {
 
   exitRequests ExitRequest[]
 
+  @@unique([schoolId, idNumber])
+  @@index([schoolId])
   @@map("students")
 }
 
 model Teacher {
   id        Int         @id @default(autoincrement())
+  schoolId  Int
+  school    School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   name      String
-  phone     String      @unique
+  phone     String
   role      TeacherRole
   className String?
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
 
-  exitRequests  ExitRequest[] @relation("teacher")
+  exitRequests   ExitRequest[] @relation("teacher")
   escalatedExits ExitRequest[] @relation("escalatedTo")
 
+  @@unique([schoolId, phone])
+  @@index([schoolId])
   @@map("teachers")
 }
 
 model ExitRequest {
-  id            Int        @id @default(autoincrement())
-  studentId     Int
-  student       Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  requestedBy   String
-  exitDate      DateTime
-  exitTime      String
-  status        ExitStatus @default(PENDING)
-  teacherId     Int?
-  teacher       Teacher?   @relation("teacher", fields: [teacherId], references: [id])
-  escalatedToId Int?
-  escalatedTo   Teacher?   @relation("escalatedTo", fields: [escalatedToId], references: [id])
-  reason        String?
-  notifiedAt    DateTime?
+  id             Int        @id @default(autoincrement())
+  schoolId       Int
+  school         School     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  studentId      Int
+  student        Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  requestedBy    String
+  exitDate       DateTime
+  exitTime       String
+  status         ExitStatus @default(PENDING)
+  teacherId      Int?
+  teacher        Teacher?   @relation("teacher", fields: [teacherId], references: [id])
+  escalatedToId  Int?
+  escalatedTo    Teacher?   @relation("escalatedTo", fields: [escalatedToId], references: [id])
+  reason         String?
+  notifiedAt     DateTime?
   reminderSentAt DateTime?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
+  @@index([schoolId])
   @@map("exit_requests")
 }
 
 model Conversation {
   id          Int               @id @default(autoincrement())
-  phone       String            @unique
+  schoolId    Int
+  school      School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  phone       String
   state       ConversationState @default(IDLE)
   contextData Json?
   expiresAt   DateTime?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
+  @@unique([schoolId, phone])
+  @@index([schoolId])
   @@map("conversations")
 }
 
 model MessageTemplate {
   id        Int      @id @default(autoincrement())
-  key       String   @unique
+  schoolId  Int
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  key       String
   name      String
   body      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([schoolId, key])
+  @@index([schoolId])
   @@map("message_templates")
 }
 
 model MessageLog {
   id          Int              @id @default(autoincrement())
+  schoolId    Int
+  school      School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   direction   MessageDirection
   phone       String
   content     String
@@ -127,33 +172,48 @@ model MessageLog {
   status      String?
   createdAt   DateTime         @default(now())
 
+  @@index([schoolId])
   @@map("message_logs")
 }
 
 model AdminUser {
   id           Int       @id @default(autoincrement())
-  username     String    @unique
+  schoolId     Int?
+  school       School?   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  username     String
   passwordHash String
   role         AdminRole
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  @@unique([schoolId, username])
+  @@index([schoolId])
   @@map("admin_users")
 }
 
 model Setting {
-  key       String   @unique
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  key       String
   value     String
   updatedAt DateTime @updatedAt
 
+  @@unique([schoolId, key])
+  @@index([schoolId])
   @@map("settings")
 }
 
 model WhatsappSession {
-  key       String   @unique
+  id        Int      @id @default(autoincrement())
+  schoolId  Int
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  key       String
   value     Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([schoolId, key])
+  @@index([schoolId])
   @@map("whatsapp_sessions")
 }

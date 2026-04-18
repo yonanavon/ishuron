@@ -60,6 +60,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 // Create student
 router.post('/', async (req: Request, res: Response) => {
   try {
+    if (req.schoolId == null) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     const { firstName, lastName, idNumber, parent1Name, parent1Phone, parent2Name, parent2Phone, className } = req.body;
     if (!firstName || !lastName || !idNumber || !parent1Name || !parent1Phone || !className) {
       res.status(400).json({ error: 'שדות חובה חסרים' });
@@ -68,6 +72,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const student = await prisma.student.create({
       data: {
+        schoolId: req.schoolId,
         firstName,
         lastName,
         idNumber,
@@ -166,11 +171,15 @@ router.get('/import-template', (_req: Request, res: Response) => {
 // Import students from Excel/CSV
 router.post('/import', upload.single('file'), async (req: Request, res: Response) => {
   try {
+    if (req.schoolId == null) {
+      res.status(400).json({ error: 'בית ספר לא מזוהה' });
+      return;
+    }
     if (!req.file) {
       res.status(400).json({ error: 'קובץ לא נמצא' });
       return;
     }
-    const result = await importStudents(req.file.buffer, req.file.originalname);
+    const result = await importStudents(req.schoolId, req.file.buffer, req.file.originalname);
     res.json(result);
   } catch (error) {
     log.error({ err: error }, 'students import error');

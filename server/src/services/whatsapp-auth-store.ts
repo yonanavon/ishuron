@@ -1,36 +1,44 @@
-import { prisma } from '../lib/prisma';
+import { prisma, runWithTenant } from '../lib/prisma';
 
 /**
- * Prisma-based auth state for Baileys.
- * Stores authentication credentials and signal keys in PostgreSQL.
+ * Prisma-based auth state for Baileys, scoped to a single school.
+ * Each school has its own independent set of WhatsApp session keys.
  */
-export async function usePrismaAuthState(): Promise<{
+export async function usePrismaAuthState(schoolId: number): Promise<{
   state: any;
   saveCreds: () => Promise<void>;
 }> {
   const baileys = await import('baileys');
   const { initAuthCreds, proto, BufferJSON } = baileys;
 
+  // Every DB call must run inside this school's tenant context so the
+  // Prisma extension scopes reads/writes to this school's rows only.
+  const run = <T>(fn: () => Promise<T>): Promise<T> =>
+    runWithTenant({ schoolId }, fn);
+
   const writeData = async (key: string, data: any) => {
     const serialized = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
-    await prisma.whatsappSession.upsert({
-      where: { key },
-      update: { value: serialized },
-      create: { key, value: serialized },
-    });
+    await run(() =>
+      prisma.whatsappSession.upsert({
+        where: { schoolId_key: { schoolId, key } },
+        update: { value: serialized },
+        create: { schoolId, key, value: serialized },
+      }),
+    );
   };
 
   const readData = async (key: string): Promise<any | null> => {
-    const row = await prisma.whatsappSession.findUnique({ where: { key } });
+    const row = await run(() =>
+      prisma.whatsappSession.findUnique({ where: { schoolId_key: { schoolId, key } } }),
+    );
     if (!row) return null;
     return JSON.parse(JSON.stringify(row.value), BufferJSON.reviver);
   };
 
   const removeData = async (key: string) => {
-    await prisma.whatsappSession.deleteMany({ where: { key } });
+    await run(() => prisma.whatsappSession.deleteMany({ where: { key } }));
   };
 
-  // Load or create creds
   let creds = await readData('creds');
   if (!creds) {
     creds = initAuthCreds();
