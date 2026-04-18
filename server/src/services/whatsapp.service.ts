@@ -10,16 +10,31 @@ const log = logger.child({ module: 'whatsapp' });
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'qr';
 
+const RECONNECT_WINDOW_MS = 10 * 60 * 1000; // 10 min
+const RECONNECT_WINDOW_LIMIT = 5;
+const RECONNECT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour pause if limit hit
+const SEND_MIN_GAP_MS = 1500;
+const PREFETCH_CHUNK = 50;
+const PREFETCH_CHUNK_GAP_MS = 2000;
+const LID_NEGATIVE_TTL_MS = 5 * 60 * 1000;
+
 class WhatsAppService {
   private socket: any = null;
   private status: ConnectionStatus = 'disconnected';
   private currentQR: string | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private recentReconnects: number[] = [];
+  private cooldownUntil = 0;
   private lastReceived: { phone: string; text: string; timestamp: string } | null = null;
   // LID <-> phone mapping cache
   private lidToPhone = new Map<string, string>();
   private phoneToLid = new Map<string, string>();
+  private lidNegativeCache = new Map<string, number>();
+  private pendingLidResolves = new Map<string, Promise<string | null>>();
+  // Global send queue — serializes outgoing sends with a minimum gap
+  private sendQueue: Promise<any> = Promise.resolve();
+  private lastSentAt = 0;
 
   async connect(): Promise<void> {
     try {
@@ -39,7 +54,7 @@ class WhatsAppService {
           creds: state.creds,
           keys: makeCacheableSignalKeyStore(state.keys, undefined as any),
         },
-        printQRInTerminal: true,
+        printQRInTerminal: false,
         generateHighQualityLinkPreview: false,
       });
 
@@ -60,15 +75,38 @@ class WhatsAppService {
           const errorMsg = lastDisconnect?.error?.message || 'unknown';
           log.warn({ statusCode, errorMsg }, 'whatsapp connection closed');
 
+          const shouldReconnect = this.shouldReconnectFor(statusCode, DisconnectReason);
+
           if (statusCode === DisconnectReason.loggedOut) {
             log.info('whatsapp logged out, clearing session');
             const { prisma } = await import('../lib/prisma.js');
             await prisma.whatsappSession.deleteMany();
             this.status = 'disconnected';
             this.emitStatus();
+          } else if (!shouldReconnect) {
+            // WhatsApp is signaling us to stop (e.g. connectionReplaced).
+            // Do not auto-reconnect — requires manual restart.
+            this.status = 'disconnected';
+            this.emitStatus();
+            this.emitError(`החיבור נסגר על ידי וואטסאפ (קוד ${statusCode}). לחץ "נתק וחבר מחדש" כדי להתחבר שוב.`);
+            log.warn({ statusCode }, 'disconnect reason not auto-reconnectable');
+          } else if (Date.now() < this.cooldownUntil) {
+            const waitMs = this.cooldownUntil - Date.now();
+            this.status = 'disconnected';
+            this.emitStatus();
+            this.emitError(`החיבור בקירור עקב ריבוי ניתוקים. נסה שוב בעוד כ-${Math.ceil(waitMs / 60000)} דקות.`);
+            log.warn({ waitMs }, 'reconnect suppressed: in cooldown window');
+          } else if (this.hitReconnectWindowLimit()) {
+            this.cooldownUntil = Date.now() + RECONNECT_COOLDOWN_MS;
+            this.recentReconnects = [];
+            this.status = 'disconnected';
+            this.emitStatus();
+            this.emitError(`זוהו ניתוקים חוזרים — החיבור בקירור לשעה כדי למנוע חסימת חשבון.`);
+            log.error({ cooldownUntil: this.cooldownUntil }, 'entering reconnect cooldown');
           } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
-            const delay = 3000 * this.reconnectAttempts;
+            this.recentReconnects.push(Date.now());
+            const delay = this.computeBackoffMs(this.reconnectAttempts);
             log.info({ attempt: this.reconnectAttempts, delayMs: delay }, 'whatsapp reconnecting');
             this.status = 'connecting';
             this.emitStatus();
@@ -165,6 +203,34 @@ class WhatsAppService {
   }
 
   /**
+   * Only reconnect for benign/transient disconnects. Reasons like
+   * connectionReplaced indicate WhatsApp wants us to stop — blindly
+   * reconnecting looks like a rogue client and risks a ban.
+   */
+  private shouldReconnectFor(statusCode: number | undefined, DisconnectReason: any): boolean {
+    if (!statusCode) return true;
+    const reconnectable = new Set<number>([
+      DisconnectReason.connectionClosed,
+      DisconnectReason.connectionLost,
+      DisconnectReason.timedOut,
+      DisconnectReason.restartRequired,
+    ].filter((v) => typeof v === 'number'));
+    return reconnectable.has(statusCode);
+  }
+
+  private hitReconnectWindowLimit(): boolean {
+    const cutoff = Date.now() - RECONNECT_WINDOW_MS;
+    this.recentReconnects = this.recentReconnects.filter((t) => t > cutoff);
+    return this.recentReconnects.length >= RECONNECT_WINDOW_LIMIT;
+  }
+
+  private computeBackoffMs(attempt: number): number {
+    const base = Math.min(30_000, 2_000 * Math.pow(2, attempt - 1));
+    const jitter = Math.floor(Math.random() * 1_000);
+    return base + jitter;
+  }
+
+  /**
    * Pre-fetch LID mappings for all known phone numbers on connect.
    */
   private async prefetchLidMappings(): Promise<void> {
@@ -185,35 +251,70 @@ class WhatsAppService {
     if (phones.size === 0 || !this.socket) return;
 
     const phoneArray = [...phones];
-    log.debug({ count: phoneArray.length }, 'prefetching LID mappings');
-    try {
-      const results = await this.socket.onWhatsApp(...phoneArray);
-      if (results) {
-        for (const r of results) {
-          if (r.lid) {
-            const lidId = typeof r.lid === 'string'
-              ? r.lid.split('@')[0]
-              : String(r.lid);
-            const rPhone = r.jid.split('@')[0].split(':')[0];
-            this.lidToPhone.set(lidId, rPhone);
-            this.phoneToLid.set(rPhone, lidId);
+    log.debug({ count: phoneArray.length, chunk: PREFETCH_CHUNK }, 'prefetching LID mappings');
+    let mapped = 0;
+    for (let i = 0; i < phoneArray.length; i += PREFETCH_CHUNK) {
+      if (!this.socket || this.status !== 'connected') return;
+      const chunk = phoneArray.slice(i, i + PREFETCH_CHUNK);
+      try {
+        const results = await this.socket.onWhatsApp(...chunk);
+        if (results) {
+          for (const r of results) {
+            if (r.lid) {
+              const lidId =
+                typeof r.lid === 'string' ? r.lid.split('@')[0] : String(r.lid);
+              const rPhone = r.jid.split('@')[0].split(':')[0];
+              this.lidToPhone.set(lidId, rPhone);
+              this.phoneToLid.set(rPhone, lidId);
+              mapped++;
+            }
           }
         }
-        log.info({ mapped: this.lidToPhone.size }, 'prefetched LID mappings');
+      } catch (err) {
+        log.error({ err, chunkStart: i }, 'prefetchLidMappings chunk error');
       }
-    } catch (err) {
-      log.error({ err }, 'prefetchLidMappings error');
+      if (i + PREFETCH_CHUNK < phoneArray.length) {
+        await new Promise((r) => setTimeout(r, PREFETCH_CHUNK_GAP_MS));
+      }
     }
+    log.info({ mapped }, 'prefetched LID mappings');
   }
 
   /**
    * Resolve a LID to a phone number by querying contacts in the DB
    * and using onWhatsApp to find which one maps to this LID.
+   *
+   * Negative-caches failed lookups for LID_NEGATIVE_TTL_MS to prevent
+   * repeated bulk onWhatsApp queries (rate-limit risk), and dedupes
+   * concurrent resolves for the same LID.
    */
   private async resolveLidToPhone(lidJid: string): Promise<string | null> {
+    const lidId = lidJid.split('@')[0];
+
+    const negAt = this.lidNegativeCache.get(lidId);
+    if (negAt && Date.now() - negAt < LID_NEGATIVE_TTL_MS) {
+      return null;
+    }
+
+    const inflight = this.pendingLidResolves.get(lidId);
+    if (inflight) return inflight;
+
+    const task = this.doResolveLidToPhone(lidJid, lidId);
+    this.pendingLidResolves.set(lidId, task);
+    try {
+      const result = await task;
+      if (result === null) {
+        this.lidNegativeCache.set(lidId, Date.now());
+      }
+      return result;
+    } finally {
+      this.pendingLidResolves.delete(lidId);
+    }
+  }
+
+  private async doResolveLidToPhone(lidJid: string, lidId: string): Promise<string | null> {
     try {
       const { prisma } = await import('../lib/prisma.js');
-      // Get all unique parent phones from students
       const students = await prisma.student.findMany({
         select: { parent1Phone: true, parent2Phone: true },
       });
@@ -222,32 +323,41 @@ class WhatsAppService {
         if (s.parent1Phone) phones.add(s.parent1Phone);
         if (s.parent2Phone) phones.add(s.parent2Phone);
       }
-      // Also add teacher phones
       const teachers = await prisma.teacher.findMany({ select: { phone: true } });
       for (const t of teachers) {
         if (t.phone) phones.add(t.phone);
       }
 
-      // Query WhatsApp for all known phones to build LID mapping
-      if (this.socket && phones.size > 0) {
-        const phoneArray = [...phones];
-        log.debug({ count: phoneArray.length }, 'resolving LID, querying known phones');
-        const results = await this.socket.onWhatsApp(...phoneArray);
-        if (results) {
-          const lidId = lidJid.split('@')[0];
-          for (const r of results) {
-            if (r.lid) {
-              const rLidId = typeof r.lid === 'string' ? r.lid.split('@')[0] : r.lid.toString?.();
-              const rPhone = r.jid.split('@')[0].split(':')[0];
-              // Cache the mapping
-              this.lidToPhone.set(rLidId, rPhone);
-              this.phoneToLid.set(rPhone, rLidId);
-              log.debug({ lidId: rLidId, phone: rPhone }, 'mapped LID');
-              if (rLidId === lidId) {
-                return rPhone;
+      if (!this.socket || phones.size === 0) return null;
+
+      const phoneArray = [...phones];
+      log.debug({ count: phoneArray.length }, 'resolving LID, querying known phones');
+      let found: string | null = null;
+      for (let i = 0; i < phoneArray.length; i += PREFETCH_CHUNK) {
+        if (!this.socket) break;
+        const chunk = phoneArray.slice(i, i + PREFETCH_CHUNK);
+        try {
+          const results = await this.socket.onWhatsApp(...chunk);
+          if (results) {
+            for (const r of results) {
+              if (r.lid) {
+                const rLidId =
+                  typeof r.lid === 'string' ? r.lid.split('@')[0] : r.lid.toString?.();
+                const rPhone = r.jid.split('@')[0].split(':')[0];
+                this.lidToPhone.set(rLidId, rPhone);
+                this.phoneToLid.set(rPhone, rLidId);
+                if (rLidId === lidId) {
+                  found = rPhone;
+                }
               }
             }
           }
+        } catch (err) {
+          log.error({ err, chunkStart: i }, 'resolveLidToPhone chunk error');
+        }
+        if (found) return found;
+        if (i + PREFETCH_CHUNK < phoneArray.length) {
+          await new Promise((r) => setTimeout(r, PREFETCH_CHUNK_GAP_MS));
         }
       }
     } catch (err) {
@@ -268,11 +378,32 @@ class WhatsAppService {
     return `${phone}@s.whatsapp.net`;
   }
 
+  /**
+   * Serialize all outgoing sends through a single queue with a minimum gap
+   * between sends. Bursting messages (e.g. multi-guard notifications or
+   * simultaneous approvals) looks bot-like to WhatsApp anti-abuse heuristics.
+   */
+  private enqueueSend<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    const task = this.sendQueue.then(async () => {
+      const wait = this.lastSentAt + SEND_MIN_GAP_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      try {
+        return await fn();
+      } finally {
+        this.lastSentAt = Date.now();
+      }
+    });
+    // Never let a rejected send poison the queue for subsequent sends.
+    this.sendQueue = task.catch(() => undefined);
+    log.debug({ label }, 'send queued');
+    return task;
+  }
+
   async sendMessage(jid: string, text: string): Promise<void> {
     if (!this.socket || this.status !== 'connected') {
       throw new Error('WhatsApp not connected');
     }
-    await this.socket.sendMessage(jid, { text });
+    await this.enqueueSend('text', () => this.socket.sendMessage(jid, { text }));
   }
 
   async sendInteractiveButtons(
@@ -283,11 +414,13 @@ class WhatsAppService {
     if (!this.socket || this.status !== 'connected') {
       throw new Error('WhatsApp not connected');
     }
-    await this.socket.sendMessage(jid, {
-      text,
-      buttons,
-      headerType: 1,
-    } as any);
+    await this.enqueueSend('buttons', () =>
+      this.socket.sendMessage(jid, {
+        text,
+        buttons,
+        headerType: 1,
+      } as any),
+    );
   }
 
   async restart(): Promise<void> {
@@ -296,6 +429,8 @@ class WhatsAppService {
       this.socket = null;
     }
     this.reconnectAttempts = 0;
+    this.recentReconnects = [];
+    this.cooldownUntil = 0;
     this.status = 'disconnected';
     this.currentQR = null;
     this.emitStatus();
@@ -319,6 +454,8 @@ class WhatsAppService {
     await prisma.whatsappSession.deleteMany();
     log.info('whatsapp session cleared from DB');
     this.reconnectAttempts = 0;
+    this.recentReconnects = [];
+    this.cooldownUntil = 0;
     this.status = 'disconnected';
     this.currentQR = null;
     this.emitStatus();
