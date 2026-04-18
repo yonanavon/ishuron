@@ -10,23 +10,34 @@ import LogsPage from './pages/admin/LogsPage';
 import SettingsPage from './pages/admin/SettingsPage';
 import GuardDashboardPage from './pages/guard/GuardDashboardPage';
 import AdminLayout from './components/layout/AdminLayout';
+import SuperLoginPage from './pages/super/SuperLoginPage';
+import SuperDashboardPage from './pages/super/SuperDashboardPage';
+import { SchoolProvider } from './contexts/SchoolContext';
 
 function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
   if (!isLoggedIn()) return <Navigate to="/login" />;
   const role = getUserRole();
   if (allowedRoles && role && !allowedRoles.includes(role)) {
-    return <Navigate to={role === 'GUARD' ? '/guard' : '/admin'} />;
+    return <Navigate to={role === 'GUARD' ? '/guard' : role === 'SUPER_ADMIN' ? '/super' : '/admin'} />;
   }
+  return <>{children}</>;
+}
+
+function SuperRoute({ children }: { children: React.ReactNode }) {
+  if (!isLoggedIn()) return <Navigate to="/super/login" />;
+  if (getUserRole() !== 'SUPER_ADMIN') return <Navigate to="/super/login" />;
   return <>{children}</>;
 }
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/super/login" element={<SuperLoginPage />} />
+      <Route path="/super" element={<SuperRoute><SuperDashboardPage /></SuperRoute>} />
+      <Route path="/login" element={<SchoolProvider><LoginPage /></SchoolProvider>} />
       <Route path="/admin" element={
         <ProtectedRoute allowedRoles={['ADMIN']}>
-          <AdminLayout />
+          <SchoolProvider><AdminLayout /></SchoolProvider>
         </ProtectedRoute>
       }>
         <Route index element={<DashboardPage />} />
@@ -39,10 +50,17 @@ export default function App() {
       </Route>
       <Route path="/guard" element={
         <ProtectedRoute allowedRoles={['GUARD', 'ADMIN']}>
-          <GuardDashboardPage />
+          <SchoolProvider><GuardDashboardPage /></SchoolProvider>
         </ProtectedRoute>
       } />
-      <Route path="/" element={<Navigate to={getUserRole() === 'GUARD' ? '/guard' : isLoggedIn() ? '/admin' : '/login'} />} />
+      <Route path="/" element={
+        <Navigate to={
+          !isLoggedIn() ? '/login' :
+          getUserRole() === 'GUARD' ? '/guard' :
+          getUserRole() === 'SUPER_ADMIN' ? '/super' :
+          '/admin'
+        } />
+      } />
     </Routes>
   );
 }

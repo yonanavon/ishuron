@@ -19,6 +19,7 @@ import logRoutes from './routes/logs';
 import exitRoutes from './routes/exits';
 import whatsappRoutes from './routes/whatsapp';
 import settingsRoutes from './routes/settings';
+import superRoutes from './routes/super';
 import { loadTemplates } from './services/template.service';
 import { startScheduler } from './services/scheduler.service';
 import { getWhatsAppRegistry } from './services/whatsapp-registry';
@@ -50,6 +51,10 @@ app.get('/api/health', (_req, res) => {
 // It sets req.schoolId and wraps downstream handlers in AsyncLocalStorage
 // so the Prisma extension auto-injects schoolId.
 app.use('/api', tenantMiddleware);
+
+// Super-admin routes — only usable from the reserved `admin.*` host, which
+// tenantMiddleware sets up with `bypass: true` and `req.isSuperAdminHost`.
+app.use('/api/super', superRoutes);
 
 // API Routes (all tenant-scoped; super-admin routes will mount under /api/super
 // and rely on the reserved subdomain to set bypass=true)

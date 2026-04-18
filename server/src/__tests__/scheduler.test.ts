@@ -9,6 +9,7 @@ const mockPrisma = {
     update: vi.fn(),
   },
   teacher: { findFirst: vi.fn() },
+  school: { findMany: vi.fn() },
 };
 
 const mockWa = {
@@ -19,9 +20,14 @@ const mockWa = {
 
 const mockNotifyTeacher = vi.fn(async () => {});
 
-vi.mock('../lib/prisma', () => ({ prisma: mockPrisma }));
-vi.mock('../services/whatsapp.service', () => ({
-  getWhatsAppService: () => mockWa,
+vi.mock('../lib/prisma', () => ({
+  prisma: mockPrisma,
+  runWithTenant: async (_ctx: any, fn: any) => fn(),
+}));
+vi.mock('../services/whatsapp-registry', () => ({
+  getWhatsAppRegistry: () => ({
+    get: () => mockWa,
+  }),
 }));
 vi.mock('../services/notification.service', () => ({
   notifyTeacher: mockNotifyTeacher,
@@ -33,6 +39,7 @@ function makeRequest(overrides: Partial<any> = {}) {
   const minutesAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
   return {
     id: 1,
+    schoolId: 1,
     status: 'PENDING',
     notifiedAt: minutesAgo(20),
     reminderSentAt: null,
@@ -54,6 +61,7 @@ beforeEach(() => {
     name: 'מזכירה',
     phone: '972502222222',
   });
+  mockPrisma.school.findMany.mockResolvedValue([{ id: 1 }]);
 });
 
 describe('scheduler.checkPendingRequests', () => {
@@ -81,7 +89,6 @@ describe('scheduler.checkPendingRequests', () => {
     mockPrisma.exitRequest.findMany.mockResolvedValue([
       makeRequest({ notifiedAt: new Date(Date.now() - 16 * 60 * 1000) }),
     ]);
-    // Another worker already claimed this request.
     mockPrisma.exitRequest.updateMany.mockResolvedValue({ count: 0 });
 
     await checkPendingRequests();
@@ -97,7 +104,6 @@ describe('scheduler.checkPendingRequests', () => {
 
     await checkPendingRequests();
 
-    // Atomic claim for escalation.
     expect(mockPrisma.exitRequest.updateMany).toHaveBeenCalledWith({
       where: { id: 1, status: 'PENDING' },
       data: expect.objectContaining({ status: 'ESCALATED' }),
@@ -149,11 +155,12 @@ describe('scheduler.checkPendingRequests', () => {
 
   it('respects custom thresholds from settings', async () => {
     mockPrisma.setting.findUnique.mockImplementation(({ where }: any) => {
-      if (where.key === 'teacher_reminder_minutes') {
-        return Promise.resolve({ key: where.key, value: '5' });
+      const key = where?.schoolId_key?.key ?? where?.key;
+      if (key === 'teacher_reminder_minutes') {
+        return Promise.resolve({ key, value: '5' });
       }
-      if (where.key === 'teacher_auto_escalate_minutes') {
-        return Promise.resolve({ key: where.key, value: '10' });
+      if (key === 'teacher_auto_escalate_minutes') {
+        return Promise.resolve({ key, value: '10' });
       }
       return Promise.resolve(null);
     });

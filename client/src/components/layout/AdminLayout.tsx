@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { logout } from '@/lib/api';
+import { useSchool } from '@/contexts/SchoolContext';
 import { Users, GraduationCap, FileText, MessageSquare, ScrollText, LayoutDashboard, LogOut, Shield, Settings } from 'lucide-react';
 
 const navItems = [
@@ -14,6 +15,7 @@ const navItems = [
 
 export default function AdminLayout() {
   const navigate = useNavigate();
+  const { school } = useSchool();
 
   const handleLogout = () => {
     logout();
@@ -24,9 +26,14 @@ export default function AdminLayout() {
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar */}
       <aside className="w-64 bg-white border-l border-border shadow-sm">
-        <div className="p-4 border-b border-border">
-          <h1 className="text-xl font-bold text-primary">Ishuron</h1>
-          <p className="text-sm text-muted-foreground">ניהול אישורי יציאה</p>
+        <div className="p-4 border-b border-border flex items-center gap-3">
+          {school?.logoUrl && (
+            <img src={school.logoUrl} alt="" className="w-10 h-10 rounded object-contain" />
+          )}
+          <div className="min-w-0">
+            <h1 className="text-lg font-bold text-primary truncate">{school?.name || 'Ishuron'}</h1>
+            <p className="text-xs text-muted-foreground">ניהול אישורי יציאה</p>
+          </div>
         </div>
         <nav className="p-2 space-y-1">
           {navItems.map(({ to, icon: Icon, label, end }) => (

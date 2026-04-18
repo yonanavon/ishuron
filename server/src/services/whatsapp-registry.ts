@@ -20,6 +20,11 @@ class WhatsAppRegistry {
     return this.instances.has(schoolId);
   }
 
+  getStatusIfExists(schoolId: number): string | null {
+    const inst = this.instances.get(schoolId);
+    return inst ? inst.getStatus() : null;
+  }
+
   getAll(): Map<number, WhatsAppService> {
     return this.instances;
   }

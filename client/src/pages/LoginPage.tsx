@@ -1,6 +1,7 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, login } from '@/lib/api';
+import { useSchool } from '@/contexts/SchoolContext';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -8,6 +9,21 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { school } = useSchool();
+
+  useEffect(() => {
+    if (window.location.hash.startsWith('#token=')) {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const token = params.get('token');
+      const role = params.get('role') || 'ADMIN';
+      const uname = params.get('username') || 'superadmin';
+      if (token) {
+        login(token, role, uname);
+        window.history.replaceState(null, '', window.location.pathname);
+        navigate(role === 'GUARD' ? '/guard' : '/admin');
+      }
+    }
+  }, [navigate]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -29,7 +45,10 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm bg-white rounded-lg shadow-md p-6">
         <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-primary">Ishuron</h1>
+          {school?.logoUrl && (
+            <img src={school.logoUrl} alt="" className="w-16 h-16 rounded object-contain mx-auto mb-2" />
+          )}
+          <h1 className="text-2xl font-bold text-primary">{school?.name || 'Ishuron'}</h1>
           <p className="text-muted-foreground text-sm mt-1">מערכת אישורי יציאת תלמידים</p>
         </div>
 
